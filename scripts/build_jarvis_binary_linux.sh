@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v uv >/dev/null 2>&1 || { echo "ERROR: uv is not installed. See https://docs.astral.sh/uv/"; exit 1; }
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT_DIR="$REPO_ROOT/dist"
+
+[[ -f "$REPO_ROOT/jarvis.py" ]] || { echo "ERROR: jarvis.py not found at $REPO_ROOT"; exit 1; }
+
+echo "==> Building jarvis binary with PyInstaller (Linux)..."
+
+mkdir -p "$OUT_DIR"
+
+uv run --with 'pyinstaller==6.19.0' pyinstaller \
+  --onefile \
+  --name jarvis \
+  --distpath "$OUT_DIR" \
+  --workpath /tmp/jarvis-pyinstaller-build \
+  --specpath /tmp/jarvis-pyinstaller-spec \
+  --clean \
+  --copy-metadata fastmcp \
+  --copy-metadata mcp \
+  --copy-metadata anyio \
+  --copy-metadata httpx \
+  --copy-metadata pydantic \
+  --copy-metadata starlette \
+  --copy-metadata uvicorn \
+  "$REPO_ROOT/jarvis.py"
+
+echo "==> Done. Binary at: $OUT_DIR/jarvis"
+ls -lh "$OUT_DIR/jarvis"

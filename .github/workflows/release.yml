@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+
+  build-jarvis-macos:
+    name: Build jarvis binary (macOS arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build jarvis binary
+        run: bash scripts/build_jarvis_binary.sh
+      - name: Rename for release
+        run: cp macOs/Jarvis/Jarvis/Resources/jarvis jarvis-${{ github.ref_name }}-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-macos-arm64
+          path: jarvis-${{ github.ref_name }}-macos-arm64
+
+  build-jarvis-linux:
+    name: Build jarvis binary (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build jarvis binary
+        run: bash scripts/build_jarvis_binary_linux.sh
+      - name: Rename for release
+        run: cp dist/jarvis jarvis-${{ github.ref_name }}-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-linux-x86_64
+          path: jarvis-${{ github.ref_name }}-linux-x86_64
+
+  build-macos-app:
+    name: Build macOS app + DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build embedded jarvis binary
+        run: bash scripts/build_jarvis_binary.sh
+      - name: Install create-dmg
+        run: brew install create-dmg
+      - name: Build Xcode project
+        run: |
+          xcodebuild \
+            -project macOs/Jarvis/Jarvis.xcodeproj \
+            -scheme Jarvis \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
+            build
+      - name: Ad-hoc sign the app
+        run: |
+          codesign --force --deep --sign - \
+            "build/DerivedData/Build/Products/Release/Jarvis.app"
+      - name: Create DMG
+        run: |
+          mkdir -p dist
+          create-dmg \
+            --volname "Jarvis MCP" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Jarvis.app" 175 190 \
+            --hide-extension "Jarvis.app" \
+            --app-drop-link 425 190 \
+            "dist/Jarvis-${{ github.ref_name }}.dmg" \
+            "build/DerivedData/Build/Products/Release/Jarvis.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-dmg
+          path: dist/Jarvis-${{ github.ref_name }}.dmg
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-jarvis-macos, build-jarvis-linux, build-macos-app]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts
+      - name: List artifacts
+        run: ls -lh artifacts/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/jarvis-*-macos-arm64
+            artifacts/jarvis-*-linux-x86_64
+            artifacts/Jarvis-*.dmg
+          generate_release_notes: true
