@@ -70,7 +70,36 @@ For stdio servers:
 }
 ```
 
-## Opencode integration
+## macOS tray app
+
+`tray.py` is a menu bar app that keeps Jarvis running as a persistent HTTP server, eliminating cold-start latency for agents.
+
+```bash
+uv run python tray.py
+```
+
+The app auto-starts the proxy on launch and shows its status in the menu bar. From the menu you can start/stop/restart the server, copy the endpoint URL, and open the log file.
+
+The server listens on `http://127.0.0.1:7070/mcp` by default. Override the port with the `JARVIS_PORT` environment variable.
+
+Logs are written to `~/.jarvis-mcp/jarvis.log`.
+
+### Connecting agents via HTTP
+
+Once the tray app is running, point your agent at the HTTP endpoint instead of spawning Jarvis as a subprocess:
+
+```json
+{
+  "mcp": {
+    "jarvis": {
+      "type": "http",
+      "url": "http://127.0.0.1:7070/mcp"
+    }
+  }
+}
+```
+
+### Opencode integration (stdio, original)
 
 Add this to your `opencode.json`:
 
