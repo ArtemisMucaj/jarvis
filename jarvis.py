@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -38,11 +39,22 @@ logging.getLogger("fastmcp.client.transports.config").addFilter(
 )
 
 # Persistent token storage — survives proxy restarts
-TOKEN_DIR = Path(__file__).parent / ".tokens"
+TOKEN_DIR = Path.home() / ".jarvis"
 token_storage = DiskStore(directory=str(TOKEN_DIR))
 
-# Load base config then inject auth and expand env vars
-config = MCPConfig.from_file(Path(__file__).parent / "servers.json")
+# Load base config: prefer ~/.jarvis/servers.json (shared with JarvisMCP.app),
+# fall back to the bundled file next to this script (local dev).
+# Filter disabled servers and strip the non-standard `enabled` field.
+_config_path = Path.home() / ".jarvis" / "servers.json"
+if not _config_path.exists():
+    _config_path = Path(__file__).parent / "servers.json"
+_raw = json.loads(_config_path.read_text())
+_raw["mcpServers"] = {
+    name: {k: v for k, v in srv.items() if k != "enabled"}
+    for name, srv in _raw.get("mcpServers", {}).items()
+    if srv.get("enabled", True) is not False
+}
+config = MCPConfig.model_validate(_raw)
 for name, server in config.mcpServers.items():
     auth = getattr(server, "auth", None)
     if auth == "oauth":
@@ -92,5 +104,10 @@ if __name__ == "__main__":
             asyncio.run(auth())
         except KeyboardInterrupt:
             print("\nAuth cancelled.")
+    elif "--http" in sys.argv:
+        idx = sys.argv.index("--http")
+        port_arg = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
+        port = int(port_arg) if port_arg.isdigit() else 7070
+        mcp.run(transport="streamable-http", host="127.0.0.1", port=port, show_banner=False)
     else:
         mcp.run(show_banner=False)

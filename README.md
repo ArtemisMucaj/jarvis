@@ -1,47 +1,40 @@
 # Jarvis
 
-MCP proxy that aggregates multiple MCP servers behind 2 synthetic tools (`search_tools` + `call_tool`) using [FastMCP](https://gofastmcp.com). This eliminates context bloat in LLM agents like opencode.
+MCP proxy that aggregates multiple MCP servers behind 2 synthetic tools (`search_tools` + `call_tool`) using [FastMCP](https://gofastmcp.com). This eliminates context bloat in LLM agents.
 
-## Setup
+## Install
 
-```bash
-# Requires Python 3.11+ and uv
-brew install uv
+### macOS app (recommended)
 
-# Install dependencies
-uv sync
-```
+Download `Jarvis-<version>.dmg` from the [latest release](https://github.com/ArtemisMucaj/jarvis-mcp/releases/latest), open it, and drag **Jarvis** to `/Applications`.
 
-## Running
+The app is ad-hoc signed. On first launch macOS may show a Gatekeeper warning — right-click the app and choose **Open** to bypass it.
 
-```bash
-uv run python jarvis.py
-```
+No Python or `uv` installation required. The app bundles its own self-contained `jarvis` binary.
 
-This starts the proxy over **stdio**. It reads `servers.json` for the list of backend MCP servers.
+### Standalone binary (Linux / headless macOS)
 
-## First-time OAuth authentication
+Download the binary for your platform from the [latest release](https://github.com/ArtemisMucaj/jarvis-mcp/releases/latest):
 
-Servers with `"auth": "oauth"` (currently **Atlassian** and **GitLab**) require a one-time browser login.
+| Platform | File |
+|---|---|
+| macOS (Apple Silicon) | `jarvis-<version>-macos-arm64` |
+| Linux (x86_64) | `jarvis-<version>-linux-x86_64` |
 
 ```bash
-uv run python jarvis.py --auth
+chmod +x jarvis-<version>-linux-x86_64
+./jarvis-<version>-linux-x86_64 --http 7070
 ```
 
-This connects to all configured servers. For each OAuth server, Jarvis will:
+### From source (requires Python 3.11+ and uv)
 
-1. Print an authorization URL in the terminal
-2. Open your browser to the provider's login page
-3. Start a local callback server (e.g. `http://localhost:<port>/callback`)
-4. Wait for you to complete the login flow
+```bash
+uv run python jarvis.py --http 7070
+```
 
-Once authenticated, tokens are persisted to `.tokens/` on disk. Subsequent runs reuse them automatically — no browser needed unless a token expires and can't be refreshed.
+## Configuration
 
-If the browser doesn't open automatically, copy the printed URL and open it manually.
-
-## Adding a new server
-
-Edit `servers.json`. The format follows the standard MCP config:
+Jarvis reads server config from `~/.jarvis/servers.json`. The format follows the standard MCP config:
 
 ```json
 {
@@ -53,8 +46,6 @@ Edit `servers.json`. The format follows the standard MCP config:
   }
 }
 ```
-
-For OAuth servers, add `"auth": "oauth"` — Jarvis automatically wires in persistent token storage.
 
 For stdio servers:
 
@@ -70,21 +61,68 @@ For stdio servers:
 }
 ```
 
-## Opencode integration
+For OAuth servers (e.g. Atlassian, GitLab), add `"auth": "oauth"` — Jarvis automatically wires in persistent token storage.
 
-Add this to your `opencode.json`:
+Environment variables can be referenced with `${VAR}` syntax in `env` values (e.g. `"${GITLAB_TOKEN}"`).
+
+Servers with `"enabled": false` are loaded but not started.
+
+## macOS app
+
+Jarvis ships as a native macOS menu bar app (SwiftUI). It keeps the proxy running as a persistent HTTP server, eliminating cold-start latency.
+
+### Features
+
+- **Menu bar icon** — coloured when running, dimmed when stopped; quick access to start/stop, copy endpoint, and open the main window
+- **Server list** — browse, enable/disable, and inspect all configured MCP servers
+- **One-click start/stop** — launch the proxy from the toolbar or the menu bar popover
+- **Preset config switcher** — save and switch between multiple `servers.json` files (e.g. work, personal, testing)
+- **Inline log viewer** — tail `~/.jarvis/jarvis.log` in real-time directly in the Presets panel
+- **System notifications** — notified when the server becomes ready
+- **Settings** — configure the HTTP port (default: `7070`)
+
+### Connecting agents
+
+Once the app is running, point your agent at the HTTP endpoint:
 
 ```json
 {
   "mcp": {
     "jarvis": {
-      "type": "local",
-      "command": ["uv", "run", "--project", "/path/to/mcps", "python", "/path/to/mcps/jarvis.py"],
-      "enabled": true
+      "type": "http",
+      "url": "http://127.0.0.1:7070/mcp"
     }
   }
 }
 ```
+
+The port is configurable in Settings.
+
+## CLI usage
+
+You can run Jarvis directly from the command line (requires `uv`).
+
+### stdio (default)
+
+```bash
+uv run python jarvis.py
+```
+
+### HTTP server
+
+```bash
+uv run python jarvis.py --http 7070
+```
+
+### OAuth authentication
+
+Servers with `"auth": "oauth"` require a one-time browser login:
+
+```bash
+uv run python jarvis.py --auth
+```
+
+Tokens are persisted to `~/.jarvis/` and reused automatically on subsequent runs.
 
 ## How it works
 
@@ -95,5 +133,37 @@ Agent wants to create a GitLab MR:
   -> search_tools("create merge request")
   -> BM25 returns top 5 matching tools with full schemas
   -> call_tool("gitlab_create_merge_request", {...})
-  -> Jarvis proxies the call to the GitLab server
+  -> Jarvis proxies the call to the GitLab MCP server
 ```
+
+## File locations
+
+| Item | Path |
+|---|---|
+| Server config | `~/.jarvis/servers.json` |
+| OAuth tokens | `~/.jarvis/` |
+| Logs | `~/.jarvis/jarvis.log` |
+
+## Building from source
+
+### macOS app
+
+```bash
+# Build the bundled jarvis binary first
+bash scripts/build_jarvis_binary.sh
+
+# Then build the Xcode project
+xcodebuild -project macOs/Jarvis/Jarvis.xcodeproj -scheme Jarvis -configuration Debug build
+```
+
+### Standalone binary
+
+```bash
+# macOS
+bash scripts/build_jarvis_binary.sh        # output: macOs/Jarvis/Jarvis/Resources/jarvis
+
+# Linux
+bash scripts/build_jarvis_binary_linux.sh  # output: dist/jarvis
+```
+
+Requires `uv` (build-time only). PyInstaller 6.19.0 is fetched automatically via `uv run --with`.

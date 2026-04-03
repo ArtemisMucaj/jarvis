@@ -1,4 +1,7 @@
 .venv/
 .tokens/
 __pycache__/
-servers.json
+macOs/Jarvis/Jarvis.xcodeproj/xcuserdata/
+macOs/Jarvis/Jarvis.xcodeproj/project.xcworkspace/xcuserdata/
+macOs/Jarvis/Jarvis/Resources/jarvis
+dist/
