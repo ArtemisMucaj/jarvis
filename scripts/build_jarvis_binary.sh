@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+command -v uv >/dev/null 2>&1 || { echo "ERROR: uv is not installed. See https://docs.astral.sh/uv/"; exit 1; }
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$REPO_ROOT/macOs/Jarvis/Jarvis/Resources"
+
+[[ -f "$REPO_ROOT/jarvis.py" ]] || { echo "ERROR: jarvis.py not found at $REPO_ROOT"; exit 1; }
 
 echo "==> Building jarvis binary with PyInstaller..."
 
 mkdir -p "$OUT_DIR"
 
-cd "$REPO_ROOT"
-
-uv run --with pyinstaller pyinstaller \
+uv run --with 'pyinstaller==6.19.0' pyinstaller \
   --onefile \
   --name jarvis \
   --distpath "$OUT_DIR" \
   --workpath /tmp/jarvis-pyinstaller-build \
   --specpath /tmp/jarvis-pyinstaller-spec \
   --clean \
-  jarvis.py
+  "$REPO_ROOT/jarvis.py"
 
 echo "==> Done. Binary at: $OUT_DIR/jarvis"
 ls -lh "$OUT_DIR/jarvis"
