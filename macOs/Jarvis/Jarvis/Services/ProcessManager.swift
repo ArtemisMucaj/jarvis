@@ -27,135 +27,38 @@ class ProcessManager: ObservableObject {
 
     // MARK: - Lifecycle
 
-    func start(uvPath: String, projectPath: String) {
+    func startBundled() {
         guard !isRunning && !isStarting else {
             print("⚠️ Already running or starting - ignoring start request")
             return
         }
         lastError = nil
-        
-        print("🔄 Setting isStarting = true")
-        DispatchQueue.main.async {
-            self.isStarting = true
+
+        guard let resourcePath = Bundle.main.resourcePath else {
+            lastError = "Could not locate app bundle resources."
+            print("❌ \(lastError!)")
+            return
         }
-        
-        // Validate UV path is accessible
+
+        let binaryPath = (resourcePath as NSString).appendingPathComponent("jarvis")
         let fileManager = FileManager.default
-        if !fileManager.fileExists(atPath: uvPath) {
-            lastError = "UV executable not found at: \(uvPath)"
+
+        guard fileManager.isExecutableFile(atPath: binaryPath) else {
+            lastError = "Bundled jarvis binary not found at: \(binaryPath)\n\nRebuild the app after running scripts/build_jarvis_binary.sh"
             print("❌ \(lastError!)")
-            DispatchQueue.main.async {
-                self.isStarting = false
-            }
             return
         }
-        
-        if !fileManager.isExecutableFile(atPath: uvPath) {
-            lastError = "File exists but is not executable: \(uvPath)\nThis may be a permission issue."
-            print("❌ \(lastError!)")
-            DispatchQueue.main.async {
-                self.isStarting = false
-            }
-            return
-        }
+
+        print("🔄 Setting isStarting = true (bundled binary)")
+        print("📦 Binary: \(binaryPath)")
+        DispatchQueue.main.async { self.isStarting = true }
 
         let logURL = logFileURL()
         prepareLogFile(at: logURL)
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: uvPath)
-        proc.arguments = [
-            "run", "--project", projectPath,
-            "python", "\(projectPath)/jarvis.py",
-            "--http", "\(port)"
-        ]
-        proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
-        proc.environment = Self.shellEnvironment
-        proc.standardOutput = logHandle(for: logURL)
-        proc.standardError  = logHandle(for: logURL)
-        proc.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async { self?.markStopped() }
-        }
-
-        do {
-            try proc.run()
-            process = proc
-            print("✓ Jarvis MCP process launched, waiting for server to be ready...")
-            
-            // Start health checking to detect when server is actually ready
-            DispatchQueue.main.async {
-                self.startHealthCheck()
-            }
-            
-            // Timeout after 30 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
-                guard let self, self.isStarting else { return }
-                print("❌ Startup timeout after 30 seconds")
-                self.isStarting = false
-                self.lastError = "Server startup timeout - check logs at \(logURL.path)"
-                self.stop()
-            }
-        } catch let error as NSError {
-            DispatchQueue.main.async {
-                self.isStarting = false
-            }
-            // Check for permission errors
-            if error.domain == NSCocoaErrorDomain && error.code == 257 {
-                lastError = "Permission denied: Cannot access '\(uvPath)'\n\nThis is likely a macOS sandbox issue. Try:\n1. Disable App Sandbox in Xcode\n2. Or grant file access permissions"
-            } else if error.domain == NSCocoaErrorDomain && error.code == 4 {
-                lastError = "File not found: \(uvPath)\n\nThe app may not have permission to access this location."
-            } else {
-                lastError = error.localizedDescription
-            }
-            print("❌ Failed to start jarvis: \(error)")
-            print("   Error domain: \(error.domain), code: \(error.code)")
-        }
-    }
-    
-    func startFromGitHub(uvPath: String, githubURL: String) {
-        guard !isRunning && !isStarting else {
-            print("⚠️ Already running or starting - ignoring start request")
-            return
-        }
-        lastError = nil
-        
-        print("🔄 Setting isStarting = true (GitHub mode)")
-        print("📦 Will run from: \(githubURL)")
-        DispatchQueue.main.async {
-            self.isStarting = true
-        }
-        
-        let fileManager = FileManager.default
-        if !fileManager.isExecutableFile(atPath: uvPath) {
-            lastError = "UV executable not found at: \(uvPath)"
-            print("❌ \(lastError!)")
-            DispatchQueue.main.async {
-                self.isStarting = false
-            }
-            return
-        }
-
-        let logURL = logFileURL()
-        prepareLogFile(at: logURL)
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: uvPath)
-        
-        var cleanURL = githubURL
-        if !cleanURL.hasPrefix("git+") {
-            cleanURL = "git+" + cleanURL
-        }
-        
-        // Run with: uv run --with git+https://... python -m jarvis --http 7070
-        proc.arguments = [
-            "run",
-            "--with", cleanURL,
-            "python", "-m", "jarvis",
-            "--http", "\(port)"
-        ]
-        
-        print("🚀 Command: \(uvPath) \(proc.arguments!.joined(separator: " "))")
-        
+        proc.executableURL = URL(fileURLWithPath: binaryPath)
+        proc.arguments = ["--http", "\(port)"]
         proc.currentDirectoryURL = fileManager.homeDirectoryForCurrentUser
         proc.environment = Self.shellEnvironment
         proc.standardOutput = logHandle(for: logURL)
@@ -167,26 +70,21 @@ class ProcessManager: ObservableObject {
         do {
             try proc.run()
             process = proc
-            print("✓ Jarvis MCP process launched from GitHub")
-            
-            DispatchQueue.main.async {
-                self.startHealthCheck()
-            }
-            
+            print("✓ Jarvis MCP process launched from bundled binary")
+            DispatchQueue.main.async { self.startHealthCheck() }
+
+            // 90s timeout (first run may need to warm up)
             DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in
                 guard let self, self.isStarting else { return }
                 print("❌ Startup timeout after 90 seconds")
                 self.isStarting = false
-                self.lastError = "Server startup timeout - check logs at \(logURL.path)"
+                self.lastError = "Server startup timeout — check logs at \(logURL.path)"
                 self.stop()
             }
-        } catch let error as NSError {
-            DispatchQueue.main.async {
-                self.isStarting = false
-            }
+        } catch {
+            DispatchQueue.main.async { self.isStarting = false }
             lastError = error.localizedDescription
-            print("❌ Failed to start from GitHub: \(error)")
-            print("   Error domain: \(error.domain), code: \(error.code)")
+            print("❌ Failed to start bundled jarvis: \(error)")
         }
     }
 
@@ -195,7 +93,12 @@ class ProcessManager: ObservableObject {
         pollTimer = nil
         healthCheckTimer?.invalidate()
         healthCheckTimer = nil
-        process?.terminate()
+        if let proc = process, proc.isRunning {
+            // Kill the entire process group (uv + python child) so nothing lingers
+            let pgid = proc.processIdentifier
+            kill(-pgid, SIGTERM)
+            proc.terminate()
+        }
         process = nil
         isRunning = false
         isStarting = false
@@ -311,7 +214,7 @@ class ProcessManager: ObservableObject {
 
     private func logFileURL() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".jarvis-mcp/jarvis.log")
+            .appendingPathComponent(".jarvis/jarvis.log")
     }
 
     private func prepareLogFile(at url: URL) {

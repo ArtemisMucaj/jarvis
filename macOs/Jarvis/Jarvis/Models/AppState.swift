@@ -9,13 +9,10 @@ class AppState: ObservableObject {
     // Settings (persisted in UserDefaults)
     @Published var uvPath: String        { didSet { UserDefaults.standard.set(uvPath, forKey: "uvPath") } }
     @Published var port: Int             { didSet { UserDefaults.standard.set(port, forKey: "port") } }
-    @Published var projectPath: String   { didSet { UserDefaults.standard.set(projectPath, forKey: "projectPath") } }
     @Published var presets: [Preset]
     @Published var activePresetID: UUID? {
         didSet { saveActivePresetID() }
     }
-
-    var isLocalMode: Bool { !projectPath.isEmpty }
 
     // Auth flow
     @Published var authOutput: String = ""
@@ -47,12 +44,10 @@ class AppState: ObservableObject {
     init() {
         let savedUV      = UserDefaults.standard.string(forKey: "uvPath") ?? ProcessManager.detectUVPath()
         let savedPort    = UserDefaults.standard.integer(forKey: "port")
-        let savedProject = UserDefaults.standard.string(forKey: "projectPath") ?? ""
 
         self.uvPath         = savedUV
         let port = (1024...65535).contains(savedPort) ? savedPort : 7070
         self.port           = port
-        self.projectPath    = savedProject
         self.processManager = ProcessManager(port: port)
         self.presets = AppState.loadPresets()
         self.activePresetID = AppState.loadActivePresetID()
@@ -154,11 +149,7 @@ class AppState: ObservableObject {
     // MARK: - Process
 
     func startServer() {
-        if isLocalMode {
-            processManager.start(uvPath: uvPath, projectPath: projectPath)
-        } else {
-            processManager.startFromGitHub(uvPath: uvPath, githubURL: githubURL)
-        }
+        processManager.startBundled()
     }
 
     func stopServer() {
