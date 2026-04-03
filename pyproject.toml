@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=2.0",
     "mcp>=1.0",
-    "key-value>=0.1",
+    "py-key-value-aio[disk]",
 ]
 
 [build-system]
