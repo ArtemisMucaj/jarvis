@@ -10,9 +10,7 @@ class AppState: ObservableObject {
     @Published var uvPath: String        { didSet { UserDefaults.standard.set(uvPath, forKey: "uvPath") } }
     @Published var port: Int             { didSet { UserDefaults.standard.set(port, forKey: "port") } }
     @Published var projectPath: String   { didSet { UserDefaults.standard.set(projectPath, forKey: "projectPath") } }
-    @Published var presets: [Preset] {
-        didSet { savePresets() }
-    }
+    @Published var presets: [Preset]
     @Published var activePresetID: UUID? {
         didSet { saveActivePresetID() }
     }
