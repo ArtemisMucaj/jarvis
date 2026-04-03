@@ -2,11 +2,34 @@
 
 MCP proxy that aggregates multiple MCP servers behind 2 synthetic tools (`search_tools` + `call_tool`) using [FastMCP](https://gofastmcp.com). This eliminates context bloat in LLM agents.
 
-## Setup
+## Install
+
+### macOS app (recommended)
+
+Download `Jarvis-<version>.dmg` from the [latest release](https://github.com/ArtemisMucaj/jarvis-mcp/releases/latest), open it, and drag **Jarvis** to `/Applications`.
+
+The app is ad-hoc signed. On first launch macOS may show a Gatekeeper warning — right-click the app and choose **Open** to bypass it.
+
+No Python or `uv` installation required. The app bundles its own self-contained `jarvis` binary.
+
+### Standalone binary (Linux / headless macOS)
+
+Download the binary for your platform from the [latest release](https://github.com/ArtemisMucaj/jarvis-mcp/releases/latest):
+
+| Platform | File |
+|---|---|
+| macOS (Apple Silicon) | `jarvis-<version>-macos-arm64` |
+| Linux (x86_64) | `jarvis-<version>-linux-x86_64` |
 
 ```bash
-# Requires Python 3.11+ and uv
-brew install uv
+chmod +x jarvis-<version>-linux-x86_64
+./jarvis-<version>-linux-x86_64 --http 7070
+```
+
+### From source (requires Python 3.11+ and uv)
+
+```bash
+uv run python jarvis.py --http 7070
 ```
 
 ## Configuration
@@ -42,39 +65,21 @@ For OAuth servers (e.g. Atlassian, GitLab), add `"auth": "oauth"` — Jarvis aut
 
 Environment variables can be referenced with `${VAR}` syntax in `env` values (e.g. `"${GITLAB_TOKEN}"`).
 
+Servers with `"enabled": false` are loaded but not started.
+
 ## macOS app
 
-Jarvis MCP ships as a native macOS menu bar app (built with SwiftUI). It keeps the proxy running as a persistent HTTP server, eliminating cold-start latency.
-
-### Install & run
-
-Open the Xcode project at `macOs/Jarvis/Jarvis.xcodeproj` and build/run, or install a pre-built release.
-
-On first launch the app:
-
-1. Auto-detects `uv` from your shell environment
-2. Creates `~/.jarvis/servers.json` with example servers if it doesn't exist
-3. Shows the main window and a menu bar icon
+Jarvis ships as a native macOS menu bar app (SwiftUI). It keeps the proxy running as a persistent HTTP server, eliminating cold-start latency.
 
 ### Features
 
+- **Menu bar icon** — coloured when running, dimmed when stopped; quick access to start/stop, copy endpoint, and open the main window
 - **Server list** — browse, enable/disable, and inspect all configured MCP servers
-- **One-click start/stop** — launch the proxy from the toolbar or menu bar
-- **Menu bar icon** — green when running, grey when stopped; quick access to start/stop, copy endpoint URL, and open the main window
-- **OAuth authentication** — authenticate OAuth servers directly from the server detail view with live output
-- **Log viewer** — tail `~/.jarvis/jarvis.log` in real-time with auto-refresh
-- **Settings** — configure `uv` path (auto-detect or browse), HTTP port, and server source
-- **System notifications** — get notified when the server is ready
-
-### Server source
-
-By default the app runs the proxy directly from GitHub:
-
-```
-uv run --with git+https://github.com/ArtemisMucaj/jarvis-mcp python -m jarvis --http 7070
-```
-
-For local development, set a **Local Project Path** in Settings pointing to your checkout. The app will use `uv run --project <path>` instead, picking up local changes immediately.
+- **One-click start/stop** — launch the proxy from the toolbar or the menu bar popover
+- **Preset config switcher** — save and switch between multiple `servers.json` files (e.g. work, personal, testing)
+- **Inline log viewer** — tail `~/.jarvis/jarvis.log` in real-time directly in the Presets panel
+- **System notifications** — notified when the server becomes ready
+- **Settings** — configure the HTTP port (default: `7070`)
 
 ### Connecting agents
 
@@ -91,11 +96,11 @@ Once the app is running, point your agent at the HTTP endpoint:
 }
 ```
 
-The port is configurable in Settings (default: `7070`).
+The port is configurable in Settings.
 
 ## CLI usage
 
-You can also run Jarvis directly from the command line without the macOS app.
+You can run Jarvis directly from the command line (requires `uv`).
 
 ### stdio (default)
 
@@ -117,7 +122,7 @@ Servers with `"auth": "oauth"` require a one-time browser login:
 uv run python jarvis.py --auth
 ```
 
-This opens your browser for each OAuth server. Once authenticated, tokens are persisted to `~/.jarvis/` and reused automatically.
+Tokens are persisted to `~/.jarvis/` and reused automatically on subsequent runs.
 
 ## How it works
 
@@ -128,13 +133,37 @@ Agent wants to create a GitLab MR:
   -> search_tools("create merge request")
   -> BM25 returns top 5 matching tools with full schemas
   -> call_tool("gitlab_create_merge_request", {...})
-  -> Jarvis proxies the call to the GitLab server
+  -> Jarvis proxies the call to the GitLab MCP server
 ```
 
 ## File locations
 
 | Item | Path |
-|------|------|
+|---|---|
 | Server config | `~/.jarvis/servers.json` |
 | OAuth tokens | `~/.jarvis/` |
 | Logs | `~/.jarvis/jarvis.log` |
+
+## Building from source
+
+### macOS app
+
+```bash
+# Build the bundled jarvis binary first
+bash scripts/build_jarvis_binary.sh
+
+# Then build the Xcode project
+xcodebuild -project macOs/Jarvis/Jarvis.xcodeproj -scheme Jarvis -configuration Debug build
+```
+
+### Standalone binary
+
+```bash
+# macOS
+bash scripts/build_jarvis_binary.sh        # output: macOs/Jarvis/Jarvis/Resources/jarvis
+
+# Linux
+bash scripts/build_jarvis_binary_linux.sh  # output: dist/jarvis
+```
+
+Requires `uv` (build-time only). PyInstaller 6.19.0 is fetched automatically via `uv run --with`.
