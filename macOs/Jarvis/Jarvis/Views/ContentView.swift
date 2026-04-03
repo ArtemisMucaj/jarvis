@@ -243,14 +243,7 @@ struct ContentView: View {
     }
 
     private var emptyDetail: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "hexagon")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
-            Text("Select a server")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        PresetsView()
     }
 
     private var statusBadge: some View {
