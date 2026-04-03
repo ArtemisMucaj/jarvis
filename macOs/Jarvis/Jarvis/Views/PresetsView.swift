@@ -1,51 +1,111 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct PresetsView: View {
     @EnvironmentObject var state: AppState
 
-    var body: some View {
-        Form {
-            Section {
-                if state.presets.isEmpty {
-                    Text("No presets added yet.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 8)
-                } else {
-                    ForEach($state.presets) { $preset in
-                        PresetRowView(preset: $preset)
-                    }
-                }
-            } header: {
-                HStack {
-                    Text("Config Presets")
-                    Spacer()
-                    Button {
-                        pickPresetFile()
-                    } label: {
-                        Label("Add Preset", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
+    @State private var logContent = "Loading logs..."
+    @State private var isAutoRefreshing = true
 
-            Section("Active Config") {
-                LabeledContent("File") {
-                    Text(state.configURL.path(percentEncoded: false))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                        .textSelection(.enabled)
+    private var logURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".jarvis/jarvis.log")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Top: presets form (natural height)
+            Form {
+                Section {
+                    if state.presets.isEmpty {
+                        Text("No presets added yet.")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 8)
+                    } else {
+                        ForEach($state.presets) { $preset in
+                            PresetRowView(preset: $preset)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Config Presets")
+                        Spacer()
+                        Button {
+                            pickPresetFile()
+                        } label: {
+                            Label("Add Preset", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
-                LabeledContent("Servers") {
-                    Text("\(state.servers.count) configured, \(state.servers.values.filter { $0.enabled ?? true }.count) enabled")
-                        .foregroundStyle(.secondary)
+
+                Section("Active Config") {
+                    LabeledContent("File") {
+                        Text(state.configURL.path(percentEncoded: false))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                            .textSelection(.enabled)
+                    }
+                    LabeledContent("Servers") {
+                        Text("\(state.servers.count) configured, \(state.servers.values.filter { $0.enabled ?? true }.count) enabled")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
+            .formStyle(.grouped)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            // Bottom: log section fills remaining space
+            LogSectionView(
+                logContent: logContent,
+                isAutoRefreshing: $isAutoRefreshing,
+                onRefresh: loadLogs,
+                onClear: clearLogs,
+                onOpenInEditor: { NSWorkspace.shared.open(logURL) }
+            )
         }
-        .formStyle(.grouped)
         .navigationTitle("Presets")
+        .onAppear {
+            loadLogs()
+            startAutoRefresh()
+        }
+        .onDisappear {
+            isAutoRefreshing = false
+        }
+        .onChange(of: isAutoRefreshing) { newValue in
+            if newValue { startAutoRefresh() }
+        }
+    }
+
+    // MARK: - Log helpers
+
+    private func loadLogs() {
+        if let content = try? String(contentsOf: logURL, encoding: .utf8) {
+            let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+            logContent = lines.suffix(10_000).joined(separator: "\n")
+        } else {
+            logContent = "No logs found at \(logURL.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
+        }
+    }
+
+    private func clearLogs() {
+        try? "".write(to: logURL, atomically: true, encoding: .utf8)
+        logContent = "Logs cleared."
+    }
+
+    private func startAutoRefresh() {
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+            guard isAutoRefreshing else {
+                timer.invalidate()
+                return
+            }
+            loadLogs()
+        }
     }
 
     private func pickPresetFile() {
@@ -120,5 +180,66 @@ struct PresetRowView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+struct LogSectionView: View {
+    let logContent: String
+    @Binding var isAutoRefreshing: Bool
+    let onRefresh: () -> Void
+    let onClear: () -> Void
+    let onOpenInEditor: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header bar
+            HStack(spacing: 12) {
+                Text("Server Logs")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Toggle(isOn: $isAutoRefreshing) {
+                    Label("Auto-refresh", systemImage: "arrow.clockwise")
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .help("Automatically refresh logs every second")
+
+                Button("Refresh", action: onRefresh)
+                    .buttonStyle(.borderless)
+
+                Button("Clear", action: onClear)
+                    .buttonStyle(.borderless)
+
+                Button("Open in Editor", action: onOpenInEditor)
+                    .buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color(nsColor: .windowBackgroundColor))
+
+            Divider()
+
+            // Log content
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(logContent)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .textSelection(.enabled)
+                        .id("logBottom")
+                }
+                .background(Color(nsColor: .textBackgroundColor))
+                .onChange(of: logContent) { _ in
+                    withAnimation {
+                        proxy.scrollTo("logBottom", anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
     }
 }
