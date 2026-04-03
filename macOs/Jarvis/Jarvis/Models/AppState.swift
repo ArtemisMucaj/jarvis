@@ -164,6 +164,27 @@ class AppState: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.startServer() }
     }
 
+    func switchPreset(_ preset: Preset?) {
+        let wasRunning = processManager.isRunning || processManager.isStarting
+        activePresetID = preset?.id
+        loadConfig()
+        if wasRunning {
+            restartServer()
+        }
+    }
+
+    func addPreset(name: String, filePath: String) {
+        let preset = Preset(name: name, filePath: filePath)
+        presets.append(preset)
+    }
+
+    func removePreset(_ preset: Preset) {
+        if activePresetID == preset.id {
+            switchPreset(nil)
+        }
+        presets.removeAll { $0.id == preset.id }
+    }
+
     // MARK: - OAuth
 
     func runAuth(for serverName: String) {
