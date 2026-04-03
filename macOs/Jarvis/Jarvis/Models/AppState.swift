@@ -73,6 +73,14 @@ class AppState: ObservableObject {
             }
         }
         .store(in: &cancellables)
+
+        // Persist preset name edits: didSet only fires on full reassignment,
+        // not on element-level mutations via @Binding. The Combine publisher
+        // emits on any mutation, so this catches in-place name changes.
+        $presets
+            .dropFirst()
+            .sink { [weak self] _ in self?.savePresets() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Config
