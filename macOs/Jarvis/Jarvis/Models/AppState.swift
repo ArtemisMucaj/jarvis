@@ -49,8 +49,12 @@ class AppState: ObservableObject {
         self.port           = port
         self.projectPath    = savedProject
         self.processManager = ProcessManager(port: port)
-        self.presets = []
-        self.activePresetID = nil
+        self.presets = AppState.loadPresets()
+        self.activePresetID = AppState.loadActivePresetID()
+
+        if let id = self.activePresetID, !self.presets.contains(where: { $0.id == id }) {
+            self.activePresetID = nil
+        }
 
         // Always try to load config from default location
         loadConfig()
@@ -62,9 +66,6 @@ class AppState: ObservableObject {
             }
         }
         .store(in: &cancellables)
-
-        self.presets = loadPresets()
-        self.activePresetID = loadActivePresetID()
     }
 
     // MARK: - Config
@@ -203,14 +204,14 @@ class AppState: ObservableObject {
         UserDefaults.standard.set(activePresetID?.uuidString, forKey: "activePresetID")
     }
 
-    private func loadPresets() -> [Preset] {
+    private static func loadPresets() -> [Preset] {
         guard let data = UserDefaults.standard.data(forKey: "presets"),
               let presets = try? JSONDecoder().decode([Preset].self, from: data)
         else { return [] }
         return presets
     }
 
-    private func loadActivePresetID() -> UUID? {
+    private static func loadActivePresetID() -> UUID? {
         guard let str = UserDefaults.standard.string(forKey: "activePresetID") else { return nil }
         return UUID(uuidString: str)
     }

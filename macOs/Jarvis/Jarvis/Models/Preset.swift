@@ -1,7 +1,7 @@
 import Foundation
 
 struct Preset: Identifiable, Codable, Equatable {
-    var id: UUID
+    let id: UUID
     var name: String
     var filePath: String
 
