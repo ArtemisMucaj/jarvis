@@ -7,11 +7,10 @@ struct PresetsView: View {
 
     @State private var logContent = "Loading logs..."
     @State private var isAutoRefreshing = true
+    @State private var refreshTimer: Timer?
 
-    private var logURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".jarvis/jarvis.log")
-    }
+    private let logURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".jarvis/jarvis.log")
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,8 +75,10 @@ struct PresetsView: View {
         }
         .onDisappear {
             isAutoRefreshing = false
+            refreshTimer?.invalidate()
+            refreshTimer = nil
         }
-        .onChange(of: isAutoRefreshing) { newValue in
+        .onChange(of: isAutoRefreshing) { _, newValue in
             if newValue { startAutoRefresh() }
         }
     }
@@ -85,23 +86,31 @@ struct PresetsView: View {
     // MARK: - Log helpers
 
     private func loadLogs() {
-        if let content = try? String(contentsOf: logURL, encoding: .utf8) {
-            let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
-            logContent = lines.suffix(10_000).joined(separator: "\n")
-        } else {
-            logContent = "No logs found at \(logURL.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
+        DispatchQueue.global(qos: .utility).async {
+            let content: String
+            if let raw = try? String(contentsOf: logURL, encoding: .utf8) {
+                let lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
+                content = lines.suffix(10_000).joined(separator: "\n")
+            } else {
+                content = "No logs found at \(logURL.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
+            }
+            DispatchQueue.main.async {
+                logContent = content
+            }
         }
     }
 
     private func clearLogs() {
         try? "".write(to: logURL, atomically: true, encoding: .utf8)
-        logContent = "Logs cleared."
+        loadLogs()
     }
 
     private func startAutoRefresh() {
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             guard isAutoRefreshing else {
-                timer.invalidate()
+                refreshTimer?.invalidate()
+                refreshTimer = nil
                 return
             }
             loadLogs()
@@ -230,13 +239,13 @@ struct LogSectionView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                         .textSelection(.enabled)
+                    Color.clear
+                        .frame(height: 1)
                         .id("logBottom")
                 }
                 .background(Color(nsColor: .textBackgroundColor))
-                .onChange(of: logContent) { _ in
-                    withAnimation {
-                        proxy.scrollTo("logBottom", anchor: .bottom)
-                    }
+                .onChange(of: logContent) { _, _ in
+                    proxy.scrollTo("logBottom", anchor: .bottom)
                 }
             }
         }
