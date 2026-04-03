@@ -6,15 +6,6 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showError = false
     @State private var errorMessage = ""
-    @State private var showLogs = false
-    @State private var logContent = "Loading logs..."
-    @State private var isAutoRefreshing = true
-    
-    private var logURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".jarvis/jarvis.log")
-    }
-
     var sortedNames: [String] { state.servers.keys.sorted() }
 
     var body: some View {
@@ -33,13 +24,6 @@ struct ContentView: View {
                 statusBadge
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    showLogs = true
-                } label: {
-                    Label("View Logs", systemImage: "doc.text.magnifyingglass")
-                }
-                .help("View server logs")
-                
                 Button {
                     openConfigFile()
                 } label: {
@@ -107,58 +91,6 @@ struct ContentView: View {
             SettingsView()
                 .environmentObject(state)
         }
-        .sheet(isPresented: $showLogs) {
-            NavigationStack {
-                VStack(spacing: 0) {
-                    // Log content
-                    ScrollView {
-                        Text(logContent)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                            .textSelection(.enabled)
-                    }
-                    .background(Color(nsColor: .textBackgroundColor))
-                }
-                .navigationTitle("Server Logs")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") {
-                            showLogs = false
-                        }
-                    }
-                    ToolbarItem(placement: .automatic) {
-                        Toggle(isOn: $isAutoRefreshing) {
-                            Label("Auto-refresh", systemImage: "arrow.clockwise")
-                        }
-                        .toggleStyle(.switch)
-                    }
-                    ToolbarItem(placement: .automatic) {
-                        Button("Refresh") {
-                            loadLogs()
-                        }
-                    }
-                    ToolbarItem(placement: .automatic) {
-                        Button("Clear") {
-                            clearLogs()
-                        }
-                    }
-                    ToolbarItem(placement: .automatic) {
-                        Button("Open in Editor") {
-                            NSWorkspace.shared.open(logURL)
-                        }
-                    }
-                }
-                .onAppear {
-                    loadLogs()
-                    startAutoRefresh()
-                }
-                .onDisappear {
-                    isAutoRefreshing = false
-                }
-                .frame(minWidth: 700, minHeight: 500)
-            }
-        }
         .alert("Error Starting Server", isPresented: $showError) {
             Button("Open Settings") {
                 showError = false
@@ -214,34 +146,6 @@ struct ContentView: View {
         NSWorkspace.shared.open(configURL)
     }
     
-    // MARK: - Log Viewer
-    
-    private func loadLogs() {
-        if let content = try? String(contentsOf: logURL, encoding: .utf8) {
-            // Get last 10000 lines to avoid memory issues
-            let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
-            let recentLines = lines.suffix(10000)
-            logContent = recentLines.joined(separator: "\n")
-        } else {
-            logContent = "No logs found at \(logURL.path)\n\nThe log file will be created when the server starts."
-        }
-    }
-    
-    private func clearLogs() {
-        try? "".write(to: logURL, atomically: true, encoding: .utf8)
-        logContent = "Logs cleared."
-    }
-    
-    private func startAutoRefresh() {
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
-            if !showLogs || !isAutoRefreshing {
-                timer.invalidate()
-                return
-            }
-            loadLogs()
-        }
-    }
-
     private var statusBadge: some View {
         HStack(spacing: 8) {
             if state.processManager.isStarting {
