@@ -164,6 +164,9 @@ class AppState: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.startServer() }
     }
 
+    /// Activates the given preset, or reverts to the default config if `preset` is `nil`.
+    /// Reloads the server config immediately; if the server was running it is restarted
+    /// asynchronously (with a short delay — the restart may race on slow machines).
     func switchPreset(_ preset: Preset?) {
         let wasRunning = processManager.isRunning || processManager.isStarting
         activePresetID = preset?.id
@@ -174,15 +177,18 @@ class AppState: ObservableObject {
     }
 
     func addPreset(name: String, filePath: String) {
-        let preset = Preset(name: name, filePath: filePath)
+        guard !filePath.isEmpty else { return }
+        let preset = Preset(name: name.isEmpty ? URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent : name,
+                            filePath: filePath)
         presets.append(preset)
     }
 
     func removePreset(_ preset: Preset) {
-        if activePresetID == preset.id {
+        let wasActive = activePresetID == preset.id
+        presets.removeAll { $0.id == preset.id }
+        if wasActive {
             switchPreset(nil)
         }
-        presets.removeAll { $0.id == preset.id }
     }
 
     // MARK: - OAuth
