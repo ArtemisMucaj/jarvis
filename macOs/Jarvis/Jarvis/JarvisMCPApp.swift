@@ -9,20 +9,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Pre-built image for the menu bar — loaded once at startup.
+private let menuBarNSImage: NSImage? = {
+    if let img = NSImage(named: "MenuBarIcon") {
+        return img
+    }
+    return nil
+}()
+
 @main
 struct JarvisMCPApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var state = AppState()
-
-    @ViewBuilder
-    private func menuBarImage(opacity: Double) -> some View {
-        if let nsImage = NSImage(named: "MenuBarIcon") {
-            let templateImage = nsImage.copy() as! NSImage
-            let _ = { templateImage.isTemplate = true }()
-            Image(nsImage: templateImage)
-                .opacity(opacity)
-        }
-    }
 
     var body: some Scene {
         // Main window - opens by default
@@ -43,12 +41,25 @@ struct JarvisMCPApp: App {
                     ProgressView()
                         .scaleEffect(0.6)
                         .controlSize(.small)
-                    menuBarImage(opacity: 1.0)
+                    menuBarIcon(dimmed: false)
                 }
             } else {
-                menuBarImage(opacity: state.processManager.isRunning ? 1.0 : 0.5)
+                menuBarIcon(dimmed: !state.processManager.isRunning)
             }
         }
         .menuBarExtraStyle(.menu)
+    }
+
+    @ViewBuilder
+    private func menuBarIcon(dimmed: Bool) -> some View {
+        if let img = menuBarNSImage {
+            Image(nsImage: img)
+                .resizable()
+                .frame(width: 16, height: 16)
+                .opacity(dimmed ? 0.5 : 1.0)
+        } else {
+            // Fallback if asset is missing
+            Image(systemName: dimmed ? "j.circle" : "j.circle.fill")
+        }
     }
 }
