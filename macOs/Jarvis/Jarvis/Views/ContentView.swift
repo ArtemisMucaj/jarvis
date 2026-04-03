@@ -25,7 +25,7 @@ struct ContentView: View {
                 ServerDetailView(name: name, server: server)
                     .id(name)
             } else {
-                emptyDetail
+                PresetsView()
             }
         }
         .toolbar {
@@ -240,10 +240,6 @@ struct ContentView: View {
             }
             loadLogs()
         }
-    }
-
-    private var emptyDetail: some View {
-        PresetsView()
     }
 
     private var statusBadge: some View {
