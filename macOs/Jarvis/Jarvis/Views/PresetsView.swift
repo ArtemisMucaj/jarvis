@@ -5,10 +5,10 @@ import AppKit
 struct PresetsView: View {
     @EnvironmentObject var state: AppState
 
-    @State private var logContent = "Loading logs..."
+    @State private var logContent = ""
     @State private var isAutoRefreshing = true
     @State private var refreshTimer: Timer?
-    @State private var lastKnownFileSize: Int = -1
+    @State private var lastReadOffset: UInt64 = 0
 
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".jarvis/jarvis.log")
@@ -94,27 +94,51 @@ struct PresetsView: View {
 
     private func loadLogs(force: Bool = false) {
         DispatchQueue.global(qos: .utility).async {
-            // Cheap stat check — skip the full read if the file hasn't grown
-            let currentSize = (try? FileManager.default.attributesOfItem(atPath: logURL.path(percentEncoded: false)))?[.size] as? Int ?? 0
-            guard force || currentSize != lastKnownFileSize else { return }
+            guard let handle = try? FileHandle(forReadingFrom: logURL) else {
+                DispatchQueue.main.async {
+                    logContent = "No logs found at \(logURL.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
+                    lastReadOffset = 0
+                }
+                return
+            }
+            defer { try? handle.close() }
 
-            let content: String
-            if let raw = try? String(contentsOf: logURL, encoding: .utf8) {
+            let fileSize = (try? handle.seekToEnd()) ?? 0
+
+            if force || lastReadOffset == 0 {
+                // Full read: seek to a point that captures at most 10_000 lines worth of bytes.
+                // We read up to 512 KB from the end, then trim to the last 10_000 lines.
+                let windowSize: UInt64 = 512 * 1024
+                let startOffset = fileSize > windowSize ? fileSize - windowSize : 0
+                try? handle.seek(toOffset: startOffset)
+                let data = handle.readDataToEndOfFile()
+                let raw = String(data: data, encoding: .utf8) ?? ""
                 let lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
-                content = lines.suffix(10_000).joined(separator: "\n")
-            } else {
-                content = "No logs found at \(logURL.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
+                let trimmed = lines.suffix(10_000).joined(separator: "\n")
+                DispatchQueue.main.async {
+                    logContent = trimmed
+                    lastReadOffset = fileSize
+                }
+            } else if fileSize > lastReadOffset {
+                // Incremental read: only the new bytes since last read
+                try? handle.seek(toOffset: lastReadOffset)
+                let data = handle.readDataToEndOfFile()
+                guard let newText = String(data: data, encoding: .utf8), !newText.isEmpty else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    logContent += newText
+                    lastReadOffset = fileSize
+                }
             }
-            DispatchQueue.main.async {
-                lastKnownFileSize = currentSize
-                logContent = content
-            }
+            // fileSize == lastReadOffset: nothing new, do nothing
         }
     }
 
     private func clearLogs() {
         try? "".write(to: logURL, atomically: true, encoding: .utf8)
-        lastKnownFileSize = -1
+        lastReadOffset = 0
+        logContent = ""
         loadLogs(force: true)
     }
 
