@@ -8,7 +8,15 @@ class AppState: ObservableObject {
 
     // Settings (persisted in UserDefaults)
     @Published var port: Int             { didSet { UserDefaults.standard.set(port, forKey: "port") } }
-    @Published var codeMode: Bool        { didSet { UserDefaults.standard.set(codeMode, forKey: "codeMode"); processManager.codeMode = codeMode } }
+    // Note: codeMode is read by ProcessManager only at launch (startBundled).
+    // Changing it while the server is running has no effect until the next restart.
+    // The SettingsView informs the user of this with a "Takes effect on next server restart" hint.
+    @Published var codeMode: Bool {
+        didSet {
+            UserDefaults.standard.set(codeMode, forKey: "codeMode")
+            processManager.codeMode = codeMode
+        }
+    }
     @Published var presets: [Preset]
     @Published var activePresetID: UUID? {
         didSet { saveActivePresetID() }
