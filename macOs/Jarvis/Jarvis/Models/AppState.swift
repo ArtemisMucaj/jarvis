@@ -2,9 +2,22 @@ import Foundation
 import Combine
 import AppKit
 
+struct DiscoveredTool: Identifiable {
+    let name: String
+    let description: String
+    var id: String { name }
+}
+
+private struct ToolEntry: Codable {
+    let name: String
+    let description: String
+}
+
 class AppState: ObservableObject {
     @Published var servers: [String: MCPServer] = [:]
     @Published var processManager: ProcessManager
+    @Published var discoveredTools: [String: [DiscoveredTool]] = [:]
+    @Published var isDiscoveringTools = false
 
     // Settings (persisted in UserDefaults); changes auto-restart the server if it is running.
     @Published var port: Int {
@@ -176,7 +189,7 @@ class AppState: ObservableObject {
         
         let config = ServersConfig(mcpServers: servers)
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(config) else { return }
         try? data.write(to: configURL)
         
@@ -208,7 +221,7 @@ class AppState: ObservableObject {
         
         let defaultConfig = ServersConfig(mcpServers: sampleServers)
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(defaultConfig) else { return }
         try? data.write(to: configURL)
         
@@ -231,6 +244,103 @@ class AppState: ObservableObject {
     func restartServer() {
         processManager.stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.startServer() }
+    }
+
+    // MARK: - Tool Discovery
+
+    func discoverTools() {
+        guard !isDiscoveringTools else { return }
+        isDiscoveringTools = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            guard let resourcePath = Bundle.main.resourcePath else {
+                DispatchQueue.main.async { self.isDiscoveringTools = false }
+                return
+            }
+
+            let binaryPath = (resourcePath as NSString).appendingPathComponent("jarvis")
+            guard FileManager.default.isExecutableFile(atPath: binaryPath) else {
+                DispatchQueue.main.async { self.isDiscoveringTools = false }
+                return
+            }
+
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: binaryPath)
+            proc.arguments = ["--list-tools"]
+            proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+            proc.environment = ProcessManager.shellEnvironment
+
+            let pipe = Pipe()
+            let errPipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = errPipe
+
+            do {
+                try proc.run()
+                // Read stdout BEFORE waitUntilExit to avoid pipe buffer deadlock
+                // (output can exceed the 64 KB pipe buffer).
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                if let errStr = String(data: errData, encoding: .utf8), !errStr.isEmpty {
+                    print("🔍 stderr: \(errStr)")
+                }
+                proc.waitUntilExit()
+
+                print("🔍 Tool discovery: exit=\(proc.terminationStatus), bytes=\(data.count)")
+
+                guard proc.terminationStatus == 0 else {
+                    print("🔍 Tool discovery failed: non-zero exit")
+                    DispatchQueue.main.async { self.isDiscoveringTools = false }
+                    return
+                }
+
+                guard let parsed = try? JSONDecoder().decode(
+                    [String: [ToolEntry]].self, from: data
+                ) else {
+                    print("🔍 Tool discovery failed: JSON decode error")
+                    if let raw = String(data: data, encoding: .utf8) {
+                        print("🔍 Raw output (first 500 chars): \(String(raw.prefix(500)))")
+                    }
+                    DispatchQueue.main.async { self.isDiscoveringTools = false }
+                    return
+                }
+
+                let tools = parsed.mapValues { entries in
+                    entries.map { DiscoveredTool(name: $0.name, description: $0.description) }
+                }
+                for (server, list) in tools.sorted(by: { $0.key < $1.key }) {
+                    print("🔍 \(server): \(list.count) tools")
+                }
+
+                DispatchQueue.main.async {
+                    self.discoveredTools = tools
+                    self.isDiscoveringTools = false
+                }
+            } catch {
+                print("🔍 Tool discovery error: \(error)")
+                DispatchQueue.main.async { self.isDiscoveringTools = false }
+            }
+        }
+    }
+
+    func isToolDisabled(server: String, tool: String) -> Bool {
+        servers[server]?.disabledTools?.contains(tool) ?? false
+    }
+
+    func toggleTool(server: String, tool: String) {
+        if servers[server]?.disabledTools == nil {
+            servers[server]?.disabledTools = []
+        }
+        if let idx = servers[server]?.disabledTools?.firstIndex(of: tool) {
+            servers[server]?.disabledTools?.remove(at: idx)
+        } else {
+            servers[server]?.disabledTools?.append(tool)
+        }
+        if servers[server]?.disabledTools?.isEmpty == true {
+            servers[server]?.disabledTools = nil
+        }
+        saveConfig()
     }
 
     /// Activates the given preset, or reverts to the default config if `preset` is `nil`.
