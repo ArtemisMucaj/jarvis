@@ -67,6 +67,23 @@ Environment variables can be referenced with `${VAR}` syntax in `env` values (e.
 
 Servers with `"enabled": false` are loaded but not started.
 
+Use `"disabledTools"` to suppress individual tools from a server without disabling it entirely:
+
+```json
+{
+  "mcpServers": {
+    "my-tool": {
+      "command": "npx",
+      "args": ["-y", "@some/mcp-server"],
+      "transport": "stdio",
+      "disabledTools": ["dangerous_tool", "another_tool"]
+    }
+  }
+}
+```
+
+Disabled tools are excluded from BM25 search results and cannot be called through Jarvis. You can also manage enabled servers and disabled tools interactively with `jarvis mcp` (see [TUI](#tui)).
+
 ## macOS app
 
 Jarvis ships as a native macOS menu bar app (SwiftUI). It keeps the proxy running as a persistent HTTP server, eliminating cold-start latency.
@@ -114,6 +131,27 @@ uv run python jarvis.py
 uv run python jarvis.py --http 7070
 ```
 
+### Specifying a config file
+
+Override the active config file with `--config`:
+
+```bash
+uv run python jarvis.py --config /path/to/servers.json --http 7070
+```
+
+When `--config` is omitted, Jarvis resolves the config in this priority order:
+1. Active preset from `~/.jarvis/presets.json`
+2. `~/.jarvis/servers.json`
+3. `servers.json` in the script directory
+
+### List available tools
+
+Probe all configured servers and print every tool as JSON, then exit:
+
+```bash
+uv run python jarvis.py --list-tools
+```
+
 ### Code Mode
 
 By default Jarvis uses BM25 search to surface relevant tools. Pass `--code-mode` to switch to FastMCP's Code Mode, where the LLM writes sandboxed Python scripts that batch multiple tool calls in a single step:
@@ -126,13 +164,39 @@ Code Mode can also be toggled in the macOS app under **Settings**.
 
 ### OAuth authentication
 
-Servers with `"auth": "oauth"` require a one-time browser login:
+Servers with `"auth": "oauth"` require a one-time browser login. Authenticate all OAuth servers at once:
 
 ```bash
 uv run python jarvis.py --auth
 ```
 
+Or target a specific server by name:
+
+```bash
+uv run python jarvis.py --auth my-server
+```
+
 Tokens are persisted to `~/.jarvis/` and reused automatically on subsequent runs.
+
+## TUI
+
+Jarvis ships a terminal UI (powered by [Textual](https://textual.textualize.io/)) for interactive management.
+
+### Manage servers and tools
+
+```bash
+uv run python jarvis.py mcp
+```
+
+Opens a tree view of all configured servers and their tools. Use **Space** to enable/disable a server or an individual tool, **r** to re-probe servers, and **q** to save changes and quit.
+
+### Manage OAuth authentication
+
+```bash
+uv run python jarvis.py auth
+```
+
+Opens a table of all configured servers and their auth type. Use **l** to trigger the OAuth login flow for the selected server (opens the browser) and **x** to clear all cached tokens.
 
 ## How it works
 
@@ -165,11 +229,33 @@ Agent wants to create a GitLab MR and post a comment:
   -> Jarvis executes both calls and returns the combined result
 ```
 
+## REST API
+
+When running in HTTP mode (`--http PORT`), Jarvis starts a companion REST API on `PORT + 1` (default `7071`). All endpoints are bound to `127.0.0.1`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/health` | Returns `{"status":"ok","mcp_port":…,"api_port":…}` |
+| GET | `/api/tools[?config=PATH]` | Probe all servers and return the full tool catalogue |
+| GET | `/api/config[?path=PATH]` | Read the active `servers.json` |
+| PUT | `/api/config[?path=PATH]` | Overwrite `servers.json` with the request body |
+| POST | `/api/servers/{name}/toggle` | Enable/disable a server — body `{"enabled": bool}` |
+| POST | `/api/tools/toggle` | Enable/disable a tool — body `{"server": "…", "tool": "…", "enabled": bool}` |
+| GET | `/api/presets` | List all presets and the active preset ID |
+| POST | `/api/presets` | Create a preset — body `{"name": "…", "filePath": "…"}` |
+| PATCH | `/api/presets/{id}` | Rename or change the file path of a preset |
+| DELETE | `/api/presets/{id}` | Delete a preset |
+| POST | `/api/presets/{id}/activate` | Switch to a preset |
+| POST | `/api/presets/default/activate` | Revert to the default `~/.jarvis/servers.json` |
+
+The macOS app uses this API internally for its server list and preset switcher.
+
 ## File locations
 
 | Item | Path |
 |---|---|
 | Server config | `~/.jarvis/servers.json` |
+| Preset list | `~/.jarvis/presets.json` |
 | OAuth tokens | `~/.jarvis/` |
 | Logs | `~/.jarvis/jarvis.log` |
 
