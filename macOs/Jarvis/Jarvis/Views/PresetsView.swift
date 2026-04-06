@@ -232,7 +232,12 @@ struct PresetRowView: View {
                 TextField("Preset name", text: $editingName)
                     .font(.body)
                     .textFieldStyle(.plain)
-                    .onSubmit { state.renamePreset(id: preset.id, to: editingName) }
+                    .disabled(!state.processManager.isRunning)
+                    .onSubmit {
+                        if state.processManager.isRunning {
+                            state.renamePreset(id: preset.id, to: editingName)
+                        }
+                    }
                 Text((preset.filePath as NSString).abbreviatingWithTildeInPath)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -255,6 +260,10 @@ struct PresetRowView: View {
         .padding(.vertical, 2)
         .onAppear { editingName = preset.name }
         .onChange(of: preset.name) { _, new in editingName = new }
+        .onChange(of: state.processManager.isRunning) { _, isRunning in
+            // Reset transient edits when server becomes unavailable
+            if !isRunning { editingName = preset.name }
+        }
         .confirmationDialog(
             isActive ? "Remove active preset?" : "Remove preset?",
             isPresented: $showDeleteConfirm,

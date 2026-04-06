@@ -372,9 +372,30 @@ class AppState: ObservableObject {
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONEncoder().encode(["name": name])
-        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
-            // Update local state optimistically (already done via binding in the view).
-            _ = self
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+
+            // Decode response and update local state
+            if let error {
+                print("⚠️ Failed to rename preset: \(error.localizedDescription)")
+                return
+            }
+
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                print("⚠️ Rename preset failed with non-200 response")
+                return
+            }
+
+            // Decode the returned preset (server returns {"preset": {...}})
+            if let data,
+               let decoded = try? JSONDecoder().decode([String: Preset].self, from: data),
+               let updatedPreset = decoded["preset"] {
+                DispatchQueue.main.async {
+                    if let idx = self.presets.firstIndex(where: { $0.id == id }) {
+                        self.presets[idx] = updatedPreset
+                    }
+                }
+            }
         }.resume()
     }
 

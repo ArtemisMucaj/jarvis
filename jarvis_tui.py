@@ -102,15 +102,10 @@ class MCPManagerApp(App[None]):
             else:
                 servers[name]["enabled"] = False
 
-            # Disabled tools (only saved when we have the probed tool list)
-            if d.get("probed_tools"):
-                disabled = [
-                    child.data["name"]
-                    for child in server_node.children
-                    if child.data
-                    and child.data.get("type") == "tool"
-                    and not child.data.get("enabled", True)
-                ]
+            # Disabled tools (read from shared cache)
+            if d.get("probed_tools") and name in self._disabled_tools_cache:
+                disabled_set = self._disabled_tools_cache[name]
+                disabled = sorted(disabled_set)
                 if disabled:
                     servers[name]["disabledTools"] = disabled
                 else:
@@ -124,16 +119,22 @@ class MCPManagerApp(App[None]):
         tree = self.query_one(Tree)
         servers: dict = self.raw_config.get("mcpServers", {})
 
+        # Store shared disabled_tools sets indexed by server name
+        self._disabled_tools_cache: dict[str, set[str]] = {}
+
         for name, srv in sorted(servers.items()):
             enabled = srv.get("enabled", True) is not False
             mark = "☑" if enabled else "☐"
+            # Create shared set once per server and store reference
+            disabled_tools = set(srv.get("disabledTools", []))
+            self._disabled_tools_cache[name] = disabled_tools
             node = tree.root.add(
                 f"{mark} {name}",
                 data={
                     "type": "server",
                     "name": name,
                     "enabled": enabled,
-                    "disabled_tools": set(srv.get("disabledTools", [])),
+                    "disabled_tools": disabled_tools,
                     "probed_tools": [],
                 },
             )
@@ -159,7 +160,8 @@ class MCPManagerApp(App[None]):
             for child in list(node.children):
                 child.remove()
 
-            disabled = node.data.get("disabled_tools", set())
+            # Use the shared disabled_tools set from cache
+            disabled = self._disabled_tools_cache.get(server_name, set())
             for tool in tools:
                 t_name = tool["name"]
                 t_enabled = t_name not in disabled
@@ -171,6 +173,7 @@ class MCPManagerApp(App[None]):
                         "name": t_name,
                         "server": server_name,
                         "enabled": t_enabled,
+                        "disabled_tools": disabled,
                     },
                 )
 
@@ -238,6 +241,15 @@ class MCPManagerApp(App[None]):
             d["enabled"] = not d["enabled"]
             mark = "  ☑" if d["enabled"] else "  ☐"
             cursor.label = f"{mark} {d['name']}"
+            # Mutate the shared disabled_tools set
+            server_name = d.get("server")
+            tool_name = d["name"]
+            if server_name and server_name in self._disabled_tools_cache:
+                disabled = self._disabled_tools_cache[server_name]
+                if d["enabled"]:
+                    disabled.discard(tool_name)
+                else:
+                    disabled.add(tool_name)
 
     def action_quit_save(self) -> None:
         self._save_config()
@@ -324,7 +336,9 @@ class AuthManagerApp(App[None]):
 
     def _populate_table(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("Server", "Auth Type", "Token Files")
+        # Only add columns if table is empty (prevent duplicates after clear)
+        if not table.columns:
+            table.add_columns("Server", "Auth Type", "Token Files")
 
         servers: dict = self.raw_config.get("mcpServers", {})
         self._server_names = sorted(servers.keys())
@@ -375,20 +389,30 @@ class AuthManagerApp(App[None]):
             self._set_status(f"'{server}' does not use OAuth — no login needed.")
             return
 
-        jarvis_script = Path(__file__).with_name("jarvis.py")
         self._set_status(
             f"Starting OAuth for '{server}'… complete the flow in your browser."
         )
 
         # Suspend the TUI so the browser/callback interaction has a clean terminal
         async with self.suspend():
-            result = subprocess.run(
-                [
-                    sys.executable, str(jarvis_script),
-                    "--config", str(self.config_path),
-                    "--auth", server,
-                ],
-            )
+            # For frozen builds (PyInstaller), relaunch current executable
+            if getattr(sys, "frozen", False):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "--config", str(self.config_path),
+                        "--auth", server,
+                    ],
+                )
+            else:
+                jarvis_script = Path(__file__).with_name("jarvis.py")
+                result = subprocess.run(
+                    [
+                        sys.executable, str(jarvis_script),
+                        "--config", str(self.config_path),
+                        "--auth", server,
+                    ],
+                )
 
         if result.returncode == 0:
             self._set_status(f"✓ Authenticated '{server}' successfully.")

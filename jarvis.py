@@ -184,8 +184,28 @@ def create_api_app(default_config_path: Path, mcp_port: int):
     from starlette.routing import Route
 
     def resolve_config(request: Request, param: str = "config") -> Path:
+        from fastapi import HTTPException
         override = request.query_params.get(param)
-        return Path(override) if override else default_config_path
+        if not override:
+            return default_config_path
+
+        # Only allow the default config or preset files in the config directory
+        override_path = Path(override)
+        config_dir = TOKEN_DIR
+
+        # Resolve to absolute path and check it's within config directory
+        try:
+            resolved = override_path.resolve()
+            # Allow default config path
+            if resolved == default_config_path.resolve():
+                return resolved
+            # Allow files in the config directory (no traversal)
+            if resolved.parent == config_dir and resolved.suffix == ".json":
+                return resolved
+        except Exception:
+            pass
+
+        raise HTTPException(status_code=400, detail="invalid config")
 
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "mcp_port": mcp_port, "api_port": mcp_port + 1})
@@ -346,17 +366,30 @@ if __name__ == "__main__":
     # Priority: --config flag  >  active preset in presets.json  >  ~/.jarvis/servers.json
     config_path = active_config_from_presets()
 
-    if "--config" in sys.argv:
-        idx = sys.argv.index("--config")
-        if idx + 1 < len(sys.argv):
-            override = Path(sys.argv[idx + 1])
-            if override.exists():
-                config_path = override
+    # Preprocess argv to extract --config and filter it out before deriving subcommand
+    filtered_argv = []
+    skip_next = False
+    for i, arg in enumerate(sys.argv[1:], start=1):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--config":
+            if i + 1 < len(sys.argv):
+                override = Path(sys.argv[i + 1])
+                if override.exists():
+                    config_path = override
+                else:
+                    print(f"Error: config file not found: {sys.argv[i + 1]}", file=sys.stderr)
+                    sys.exit(1)
+                skip_next = True
             else:
-                print(f"Error: config file not found: {sys.argv[idx + 1]}", file=sys.stderr)
+                print("Error: --config requires a path argument", file=sys.stderr)
                 sys.exit(1)
+        else:
+            filtered_argv.append(arg)
 
-    subcmd = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else None
+    # Derive subcommand from filtered argv (first non-flag token)
+    subcmd = next((arg for arg in filtered_argv if not arg.startswith("-")), None)
 
     if subcmd == "mcp":
         from jarvis_tui import MCPManagerApp
@@ -392,7 +425,12 @@ if __name__ == "__main__":
         mcp.disable(names=disabled_tools)
 
     if "--auth" in sys.argv:
-        target = next((a for a in sys.argv[2:] if not a.startswith("-")), None)
+        # Scan filtered_argv for auth target (first non-flag after --auth)
+        auth_idx = next((i for i, arg in enumerate(filtered_argv) if arg == "--auth"), None)
+        if auth_idx is not None:
+            target = next((filtered_argv[i] for i in range(auth_idx + 1, len(filtered_argv)) if not filtered_argv[i].startswith("-")), None)
+        else:
+            target = None
         if target and target not in config.mcpServers:
             print(f"Unknown server '{target}'. Available: {', '.join(config.mcpServers)}")
             sys.exit(1)
@@ -413,7 +451,12 @@ if __name__ == "__main__":
     elif "--http" in sys.argv:
         idx = sys.argv.index("--http")
         port_arg = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
-        port = int(port_arg) if port_arg.isdigit() else 7070
+        # Validate port is < 65535 (need room for API port at port+1)
+        if port_arg.isdigit():
+            parsed_port = int(port_arg)
+            port = parsed_port if parsed_port <= 65534 else 7070
+        else:
+            port = 7070
 
         mcp.add_transform(CodeMode() if code_mode else BM25SearchTransform(max_results=5))
         start_api_thread(config_path, port, port + 1)
