@@ -132,6 +132,28 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             print("\nAuth cancelled.")
     elif "--list-tools" in sys.argv:
+        # Parse optional --config override
+        _probe_raw_servers = _raw_servers
+        if "--config" in sys.argv:
+            idx = sys.argv.index("--config")
+            if idx + 1 < len(sys.argv):
+                override_path = Path(sys.argv[idx + 1])
+                if override_path.exists():
+                    override_raw = json.loads(override_path.read_text())
+                    # Build disabled_tools set from override config
+                    override_disabled_tools: set[str] = set()
+                    for _name, _srv in override_raw.get("mcpServers", {}).items():
+                        if _srv.get("enabled", True) is False:
+                            continue
+                        for _tool in _srv.get("disabledTools", []):
+                            override_disabled_tools.add(f"{_name}_{_tool}")
+                    # Strip non-standard keys and filter disabled servers
+                    override_raw["mcpServers"] = {
+                        name: {k: v for k, v in srv.items() if k not in _NON_STANDARD_KEYS}
+                        for name, srv in override_raw.get("mcpServers", {}).items()
+                        if srv.get("enabled", True) is not False
+                    }
+                    _probe_raw_servers = dict(override_raw["mcpServers"])
 
         async def _probe(name: str, raw: dict) -> list[dict[str, str]]:
             mini = MCPConfig.model_validate({"mcpServers": {name: raw}})
@@ -155,9 +177,9 @@ if __name__ == "__main__":
                     print(f"[{name}] probe failed: {exc}", file=sys.stderr)
                     return []
 
-            names = list(_raw_servers.keys())
+            names = list(_probe_raw_servers.keys())
             results = await asyncio.gather(
-                *(safe_probe(n, _raw_servers[n]) for n in names)
+                *(safe_probe(n, _probe_raw_servers[n]) for n in names)
             )
             json.dump(dict(zip(names, results)), sys.stdout, indent=2)
 

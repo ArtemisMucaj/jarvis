@@ -6,25 +6,43 @@ struct ServerDetailView: View {
     @EnvironmentObject var state: AppState
     @State private var newEnvKey = ""
     @State private var newEnvValue = ""
+    @State private var stagedServer: MCPServer
+    @State private var hasChanges = false
 
-    private func binding<T>(for keyPath: WritableKeyPath<MCPServer, T>) -> Binding<T> {
+    init(name: String, server: MCPServer) {
+        self.name = name
+        self.server = server
+        _stagedServer = State(initialValue: server)
+    }
+
+    private func binding<T: Equatable>(for keyPath: WritableKeyPath<MCPServer, T>) -> Binding<T> {
         Binding(
-            get: { server[keyPath: keyPath] },
+            get: { stagedServer[keyPath: keyPath] },
             set: { newValue in
-                state.servers[name]?[keyPath: keyPath] = newValue
-                state.saveConfig()
+                stagedServer[keyPath: keyPath] = newValue
+                hasChanges = true
             }
         )
     }
 
     private func optionalStringBinding(for keyPath: WritableKeyPath<MCPServer, String?>) -> Binding<String> {
         Binding(
-            get: { server[keyPath: keyPath] ?? "" },
+            get: { stagedServer[keyPath: keyPath] ?? "" },
             set: { newValue in
-                state.servers[name]?[keyPath: keyPath] = newValue.isEmpty ? nil : newValue
-                state.saveConfig()
+                stagedServer[keyPath: keyPath] = newValue.isEmpty ? nil : newValue
+                hasChanges = true
             }
         )
+    }
+
+    private func applyChanges() {
+        state.servers[name] = stagedServer
+        state.saveConfig()
+        hasChanges = false
+        // Restart server if running to apply changes
+        if state.processManager.isRunning {
+            state.restartServer()
+        }
     }
 
     var body: some View {
@@ -38,40 +56,83 @@ struct ServerDetailView: View {
                 } else {
                     TextField("Command", text: optionalStringBinding(for: \.command))
                         .textFieldStyle(.roundedBorder)
-                    TextField("Args", text: Binding(
-                        get: { server.args?.joined(separator: " ") ?? "" },
-                        set: { newValue in
-                            let parts = newValue.split(separator: " ").map(String.init)
-                            state.servers[name]?.args = parts.isEmpty ? nil : parts
-                            state.saveConfig()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Args")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                if stagedServer.args == nil {
+                                    stagedServer.args = [""]
+                                } else {
+                                    stagedServer.args?.append("")
+                                }
+                                hasChanges = true
+                            } label: {
+                                Image(systemName: "plus.circle")
+                                    .foregroundStyle(.green)
+                            }
+                            .buttonStyle(.borderless)
                         }
-                    ))
-                    .textFieldStyle(.roundedBorder)
+
+                        if let args = stagedServer.args, !args.isEmpty {
+                            ForEach(args.indices, id: \.self) { index in
+                                HStack {
+                                    TextField("Arg \(index)", text: Binding(
+                                        get: { stagedServer.args?[index] ?? "" },
+                                        set: { newValue in
+                                            stagedServer.args?[index] = newValue
+                                            hasChanges = true
+                                        }
+                                    ))
+                                    .textFieldStyle(.roundedBorder)
+
+                                    Button {
+                                        stagedServer.args?.remove(at: index)
+                                        if stagedServer.args?.isEmpty == true {
+                                            stagedServer.args = nil
+                                        }
+                                        hasChanges = true
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                            .foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        } else {
+                            Text("No arguments")
+                                .foregroundStyle(.tertiary)
+                                .font(.caption)
+                        }
+                    }
+
                     LabeledContent("Transport", value: "stdio")
                 }
             }
 
             // Environment
             Section {
-                if let env = server.env, !env.isEmpty {
+                if let env = stagedServer.env, !env.isEmpty {
                     ForEach(env.keys.sorted(), id: \.self) { key in
                         HStack {
                             Text(key)
                                 .frame(minWidth: 100, alignment: .leading)
                             TextField("Value", text: Binding(
-                                get: { server.env?[key] ?? "" },
+                                get: { stagedServer.env?[key] ?? "" },
                                 set: { newValue in
-                                    state.servers[name]?.env?[key] = newValue
-                                    state.saveConfig()
+                                    stagedServer.env?[key] = newValue
+                                    hasChanges = true
                                 }
                             ))
                             .textFieldStyle(.roundedBorder)
                             Button {
-                                state.servers[name]?.env?.removeValue(forKey: key)
-                                if state.servers[name]?.env?.isEmpty == true {
-                                    state.servers[name]?.env = nil
+                                stagedServer.env?.removeValue(forKey: key)
+                                if stagedServer.env?.isEmpty == true {
+                                    stagedServer.env = nil
                                 }
-                                state.saveConfig()
+                                hasChanges = true
                             } label: {
                                 Image(systemName: "minus.circle")
                                     .foregroundStyle(.red)
@@ -88,11 +149,11 @@ struct ServerDetailView: View {
                         .textFieldStyle(.roundedBorder)
                     Button {
                         guard !newEnvKey.isEmpty else { return }
-                        if state.servers[name]?.env == nil {
-                            state.servers[name]?.env = [:]
+                        if stagedServer.env == nil {
+                            stagedServer.env = [:]
                         }
-                        state.servers[name]?.env?[newEnvKey] = newEnvValue
-                        state.saveConfig()
+                        stagedServer.env?[newEnvKey] = newEnvValue
+                        hasChanges = true
                         newEnvKey = ""
                         newEnvValue = ""
                     } label: {
@@ -151,13 +212,29 @@ struct ServerDetailView: View {
             Section("Status") {
                 LabeledContent("Enabled") {
                     Toggle("", isOn: Binding(
-                        get: { server.enabled ?? true },
+                        get: { stagedServer.enabled ?? true },
                         set: { newValue in
-                            state.servers[name]?.enabled = newValue
-                            state.saveConfig()
+                            stagedServer.enabled = newValue
+                            hasChanges = true
                         }
                     ))
                     .labelsHidden()
+                }
+
+                if hasChanges {
+                    HStack {
+                        Spacer()
+                        Button("Discard Changes") {
+                            stagedServer = server
+                            hasChanges = false
+                        }
+                        .foregroundStyle(.secondary)
+
+                        Button("Apply & Restart") {
+                            applyChanges()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
         }

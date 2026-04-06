@@ -278,14 +278,32 @@ class AppState: ObservableObject {
 
             do {
                 try proc.run()
-                // Read stdout BEFORE waitUntilExit to avoid pipe buffer deadlock
-                // (output can exceed the 64 KB pipe buffer).
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+
+                // Read stdout and stderr concurrently to avoid deadlock
+                var stdoutData: Data?
+                var stderrData: Data?
+                let group = DispatchGroup()
+
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    stdoutData = pipe.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+
+                group.wait()
+                proc.waitUntilExit()
+
+                let data = stdoutData ?? Data()
+                let errData = stderrData ?? Data()
                 if let errStr = String(data: errData, encoding: .utf8), !errStr.isEmpty {
                     print("🔍 stderr: \(errStr)")
                 }
-                proc.waitUntilExit()
 
                 print("🔍 Tool discovery: exit=\(proc.terminationStatus), bytes=\(data.count)")
 
@@ -340,6 +358,8 @@ class AppState: ObservableObject {
         if servers[server]?.disabledTools?.isEmpty == true {
             servers[server]?.disabledTools = nil
         }
+        // Mark server as requiring restart since jarvis.py's _disabled_tools snapshot is immutable
+        servers[server]?.requiresRestart = true
         saveConfig()
     }
 
