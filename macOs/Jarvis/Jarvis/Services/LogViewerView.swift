@@ -70,7 +70,7 @@ struct LogViewerView: View {
                         .id("logContent")
                 }
                 .background(Color(nsColor: .textBackgroundColor))
-                .onChange(of: logContent) { _ in
+                .onChange(of: logContent) { _, _ in
                     if isAutoRefreshing {
                         withAnimation {
                             proxy.scrollTo("logContent", anchor: .bottom)
@@ -97,7 +97,7 @@ struct LogViewerView: View {
             let recentLines = lines.suffix(10000)
             logContent = recentLines.joined(separator: "\n")
         } else {
-            logContent = "No logs found at \(logURL.path)\n\nThe log file will be created when the server starts."
+            logContent = "No logs found at \(logURL.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
         }
     }
     

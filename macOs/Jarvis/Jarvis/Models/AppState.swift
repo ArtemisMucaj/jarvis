@@ -267,7 +267,8 @@ class AppState: ObservableObject {
 
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: binaryPath)
-            proc.arguments = ["--list-tools"]
+            // Pass --config to honor the active preset
+            proc.arguments = ["--list-tools", "--config", self.configURL.path]
             proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
             proc.environment = ProcessManager.shellEnvironment
 

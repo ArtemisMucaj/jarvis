@@ -9,10 +9,18 @@ struct ServerDetailView: View {
     @State private var stagedServer: MCPServer
     @State private var hasChanges = false
 
+    // Stable-identity wrapper for args to avoid index-based ForEach issues
+    struct ArgItem: Identifiable {
+        let id: UUID
+        var value: String
+    }
+    @State private var argItems: [ArgItem] = []
+
     init(name: String, server: MCPServer) {
         self.name = name
         self.server = server
         _stagedServer = State(initialValue: server)
+        _argItems = State(initialValue: (server.args ?? []).map { ArgItem(id: UUID(), value: $0) })
     }
 
     private func binding<T: Equatable>(for keyPath: WritableKeyPath<MCPServer, T>) -> Binding<T> {
@@ -33,6 +41,14 @@ struct ServerDetailView: View {
                 hasChanges = true
             }
         )
+    }
+
+    private func syncArgsToServer() {
+        if argItems.isEmpty {
+            stagedServer.args = nil
+        } else {
+            stagedServer.args = argItems.map { $0.value }
+        }
     }
 
     private func applyChanges() {
@@ -63,11 +79,8 @@ struct ServerDetailView: View {
                                 .foregroundStyle(.secondary)
                             Spacer()
                             Button {
-                                if stagedServer.args == nil {
-                                    stagedServer.args = [""]
-                                } else {
-                                    stagedServer.args?.append("")
-                                }
+                                argItems.append(ArgItem(id: UUID(), value: ""))
+                                syncArgsToServer()
                                 hasChanges = true
                             } label: {
                                 Image(systemName: "plus.circle")
@@ -76,23 +89,24 @@ struct ServerDetailView: View {
                             .buttonStyle(.borderless)
                         }
 
-                        if let args = stagedServer.args, !args.isEmpty {
-                            ForEach(args.indices, id: \.self) { index in
+                        if !argItems.isEmpty {
+                            ForEach(argItems) { item in
                                 HStack {
-                                    TextField("Arg \(index)", text: Binding(
-                                        get: { stagedServer.args?[index] ?? "" },
+                                    TextField("Arg", text: Binding(
+                                        get: { item.value },
                                         set: { newValue in
-                                            stagedServer.args?[index] = newValue
-                                            hasChanges = true
+                                            if let index = argItems.firstIndex(where: { $0.id == item.id }) {
+                                                argItems[index].value = newValue
+                                                syncArgsToServer()
+                                                hasChanges = true
+                                            }
                                         }
                                     ))
                                     .textFieldStyle(.roundedBorder)
 
                                     Button {
-                                        stagedServer.args?.remove(at: index)
-                                        if stagedServer.args?.isEmpty == true {
-                                            stagedServer.args = nil
-                                        }
+                                        argItems.removeAll { $0.id == item.id }
+                                        syncArgsToServer()
                                         hasChanges = true
                                     } label: {
                                         Image(systemName: "minus.circle")
@@ -188,6 +202,17 @@ struct ServerDetailView: View {
                     Text("No tools discovered yet")
                         .foregroundStyle(.secondary)
                 }
+
+                if state.servers[name]?.requiresRestart == true {
+                    HStack {
+                        Spacer()
+                        Button("Apply Tool Changes & Restart") {
+                            state.servers[name]?.requiresRestart = false
+                            applyChanges()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
             } header: {
                 HStack {
                     Text("Tools")
@@ -225,7 +250,10 @@ struct ServerDetailView: View {
                     HStack {
                         Spacer()
                         Button("Discard Changes") {
-                            stagedServer = server
+                            // Reset to the current authoritative server state
+                            let currentServer = state.servers[name] ?? server
+                            stagedServer = currentServer
+                            argItems = (currentServer.args ?? []).map { ArgItem(id: UUID(), value: $0) }
                             hasChanges = false
                         }
                         .foregroundStyle(.secondary)
@@ -241,6 +269,14 @@ struct ServerDetailView: View {
         .formStyle(.grouped)
         .navigationTitle(name)
         .navigationSubtitle(server.isOAuth ? "OAuth" : (server.isHTTP ? "HTTP" : "stdio"))
+        .onChange(of: server) { newServer in
+            // Sync stagedServer when the authoritative server changes externally
+            // (e.g., from file watcher, preset switch, or tool toggle)
+            if !hasChanges {
+                stagedServer = newServer
+                argItems = (newServer.args ?? []).map { ArgItem(id: UUID(), value: $0) }
+            }
+        }
     }
 }
 
@@ -264,6 +300,11 @@ struct ToolRowView: View {
                 }
             }
             Spacer()
+            if state.servers[serverName]?.requiresRestart == true {
+                Text("Restart required")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             Toggle("", isOn: Binding(
                 get: { !isDisabled },
                 set: { _ in
