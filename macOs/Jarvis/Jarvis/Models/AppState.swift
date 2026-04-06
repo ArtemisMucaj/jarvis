@@ -46,7 +46,9 @@ class AppState: ObservableObject {
     // Settings (persisted in UserDefaults); changes auto-restart the server if running.
     @Published var port: Int {
         didSet {
-            guard (1024...65535).contains(port) else { port = oldValue; return }
+            // Clamp to 1024...65534 to ensure apiPort (port + 1) never exceeds 65535
+            let clamped = max(1024, min(65534, port))
+            if port != clamped { port = clamped; return }
             UserDefaults.standard.set(port, forKey: "port")
             processManager.port = port
             if processManager.isRunning || processManager.isStarting { restartServer() }
@@ -90,7 +92,8 @@ class AppState: ObservableObject {
     init() {
         let savedPort     = UserDefaults.standard.integer(forKey: "port")
         let savedCodeMode = UserDefaults.standard.bool(forKey: "codeMode")
-        let port          = (1024...65535).contains(savedPort) ? savedPort : 7070
+        // Clamp to 1024...65534 to ensure apiPort (port + 1) never exceeds 65535
+        let port          = (1024...65534).contains(savedPort) ? savedPort : 7070
 
         self.port           = port
         self.codeMode       = savedCodeMode

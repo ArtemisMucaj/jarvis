@@ -186,13 +186,21 @@ class MCPManagerApp(App[None]):
     @work
     async def _probe_all(self) -> None:
         """Probe all enabled servers in the background (runs in app event loop)."""
-        from jarvis import load_raw_config, probe_server
+        from jarvis import probe_server
 
-        try:
-            _, raw_servers = load_raw_config(self.config_path)
-        except Exception as exc:
-            self._set_status(f"Config error: {exc}")
-            return
+        # Build the list of enabled servers from in-memory UI state instead of disk
+        tree = self.query_one(Tree)
+        raw_servers = {}
+        servers_config = self.raw_config.get("mcpServers", {})
+
+        for server_node in tree.root.children:
+            d = server_node.data
+            if not d or d.get("type") != "server":
+                continue
+            name = d["name"]
+            # Only probe servers that are enabled in the UI state
+            if d.get("enabled", True) and name in servers_config:
+                raw_servers[name] = servers_config[name]
 
         total = len(raw_servers)
         if total == 0:
@@ -258,8 +266,10 @@ class MCPManagerApp(App[None]):
     def action_refresh(self) -> None:
         """Re-probe all servers and refresh the tree."""
         tree = self.query_one(Tree)
+        # Clear probed tools for enabled servers based on in-memory UI state
         for node in tree.root.children:
-            if node.data and node.data.get("enabled", True):
+            d = node.data
+            if d and d.get("type") == "server" and d.get("enabled", True):
                 for child in list(node.children):
                     child.remove()
                 node.add_leaf("  ⟳ probing…", data={"type": "hint"})
@@ -360,7 +370,26 @@ class AuthManagerApp(App[None]):
     def _count_token_files(self) -> int:
         """Count non-config files in TOKEN_DIR (heuristic for token presence)."""
         token_dir = Path.home() / ".jarvis"
+        # Start with base exclusions
         excluded = {"servers.json", "presets.json", "jarvis.log"}
+
+        # Add active config file if it's in token_dir
+        if self.config_path.parent == token_dir:
+            excluded.add(self.config_path.name)
+
+        # Add preset config files that reside in token_dir
+        try:
+            presets_file = token_dir / "presets.json"
+            if presets_file.exists():
+                import json
+                data = json.loads(presets_file.read_text())
+                for preset in data.get("presets", []):
+                    file_path = Path(preset.get("filePath", ""))
+                    if file_path.parent == token_dir:
+                        excluded.add(file_path.name)
+        except Exception:
+            pass
+
         try:
             return sum(
                 1
@@ -422,7 +451,25 @@ class AuthManagerApp(App[None]):
     def action_logout(self) -> None:
         """Delete all non-config files from TOKEN_DIR (clears all OAuth tokens)."""
         token_dir = Path.home() / ".jarvis"
+        # Start with base exclusions
         excluded = {"servers.json", "presets.json", "jarvis.log"}
+
+        # Add active config file if it's in token_dir
+        if self.config_path.parent == token_dir:
+            excluded.add(self.config_path.name)
+
+        # Add preset config files that reside in token_dir
+        try:
+            presets_file = token_dir / "presets.json"
+            if presets_file.exists():
+                data = json.loads(presets_file.read_text())
+                for preset in data.get("presets", []):
+                    file_path = Path(preset.get("filePath", ""))
+                    if file_path.parent == token_dir:
+                        excluded.add(file_path.name)
+        except Exception:
+            pass
+
         cleared = 0
         errors = 0
         try:
