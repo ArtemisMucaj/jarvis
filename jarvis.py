@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 from mcp import McpError
@@ -37,6 +38,40 @@ class _SuppressMcpSessionWarning(logging.Filter):
 logging.getLogger("fastmcp.client.transports.config").addFilter(
     _SuppressMcpSessionWarning()
 )
+
+
+# ── Preset management ────────────────────────────────────────────────────────
+
+_PRESETS_PATH = TOKEN_DIR / "presets.json"
+
+
+def _load_presets() -> dict:
+    """Load ~/.jarvis/presets.json; returns empty structure if absent."""
+    try:
+        return json.loads(_PRESETS_PATH.read_text())
+    except FileNotFoundError:
+        return {"presets": [], "activePresetID": None}
+    except Exception:
+        return {"presets": [], "activePresetID": None}
+
+
+def _save_presets(data: dict) -> None:
+    TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+    _PRESETS_PATH.write_text(json.dumps(data, indent=2))
+
+
+def _active_config_from_presets() -> Path:
+    """Return the config path for the active preset, or the default."""
+    data = _load_presets()
+    active_id = data.get("activePresetID")
+    if active_id:
+        for p in data.get("presets", []):
+            if p.get("id") == active_id:
+                path = Path(p["filePath"])
+                if path.exists():
+                    return path
+    default = TOKEN_DIR / "servers.json"
+    return default if default.exists() else Path(__file__).parent / "servers.json"
 
 
 # ── Config utilities ──────────────────────────────────────────────────────────
@@ -224,6 +259,68 @@ def _create_api_app(default_config_path: Path, mcp_port: int):
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
+    # ── Preset endpoints ──────────────────────────────────────────────────────
+
+    async def list_presets(request: Request) -> JSONResponse:
+        data = _load_presets()
+        # Enrich with the resolved active config path so clients don't have to compute it
+        active_path = str(_active_config_from_presets())
+        return JSONResponse({**data, "activeConfigPath": active_path})
+
+    async def create_preset(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+            name = body["name"]
+            file_path = body["filePath"]
+            preset_id = str(uuid.uuid4())
+            data = _load_presets()
+            data["presets"].append({"id": preset_id, "name": name, "filePath": file_path})
+            _save_presets(data)
+            return JSONResponse({"preset": {"id": preset_id, "name": name, "filePath": file_path}}, status_code=201)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+    async def update_preset(request: Request) -> JSONResponse:
+        preset_id = request.path_params["id"]
+        try:
+            body = await request.json()
+            data = _load_presets()
+            for p in data["presets"]:
+                if p["id"] == preset_id:
+                    if "name" in body:
+                        p["name"] = body["name"]
+                    if "filePath" in body:
+                        p["filePath"] = body["filePath"]
+                    _save_presets(data)
+                    return JSONResponse({"preset": p})
+            return JSONResponse({"error": "Preset not found"}, status_code=404)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+    async def delete_preset(request: Request) -> JSONResponse:
+        preset_id = request.path_params["id"]
+        data = _load_presets()
+        before = len(data["presets"])
+        data["presets"] = [p for p in data["presets"] if p["id"] != preset_id]
+        if len(data["presets"]) == before:
+            return JSONResponse({"error": "Preset not found"}, status_code=404)
+        if data.get("activePresetID") == preset_id:
+            data["activePresetID"] = None
+        _save_presets(data)
+        return JSONResponse({"status": "ok"})
+
+    async def activate_preset(request: Request) -> JSONResponse:
+        preset_id = request.path_params.get("id")
+        data = _load_presets()
+        if preset_id and preset_id != "default":
+            if not any(p["id"] == preset_id for p in data["presets"]):
+                return JSONResponse({"error": "Preset not found"}, status_code=404)
+            data["activePresetID"] = preset_id
+        else:
+            data["activePresetID"] = None
+        _save_presets(data)
+        return JSONResponse({"status": "ok", "activePresetID": data["activePresetID"]})
+
     return Starlette(
         routes=[
             Route("/api/health", health),
@@ -231,6 +328,13 @@ def _create_api_app(default_config_path: Path, mcp_port: int):
             Route("/api/config", config_endpoint, methods=["GET", "PUT"]),
             Route("/api/servers/{name}/toggle", toggle_server, methods=["POST"]),
             Route("/api/tools/toggle", toggle_tool, methods=["POST"]),
+            # Presets
+            Route("/api/presets", list_presets, methods=["GET"]),
+            Route("/api/presets", create_preset, methods=["POST"]),
+            Route("/api/presets/{id}", update_preset, methods=["PATCH"]),
+            Route("/api/presets/{id}", delete_preset, methods=["DELETE"]),
+            Route("/api/presets/{id}/activate", activate_preset, methods=["POST"]),
+            Route("/api/presets/default/activate", activate_preset, methods=["POST"]),
         ]
     )
 
@@ -253,10 +357,9 @@ def _start_api_thread(config_path: Path, mcp_port: int, api_port: int) -> None:
 if __name__ == "__main__":
     import asyncio
 
-    # ── Resolve config path (global --config flag applies to every mode) ──────
-    _default_config = Path.home() / ".jarvis" / "servers.json"
-    if not _default_config.exists():
-        _default_config = Path(__file__).parent / "servers.json"
+    # ── Resolve config path ───────────────────────────────────────────────────
+    # Priority: --config flag  >  active preset in presets.json  >  ~/.jarvis/servers.json
+    _default_config = _active_config_from_presets()
 
     if "--config" in sys.argv:
         _idx = sys.argv.index("--config")
