@@ -21,6 +21,8 @@ struct MCPServer: Codable {
 
     // non-standard: managed by JarvisMCP, stripped before jarvis.py reads it
     var enabled: Bool?
+    var disabledTools: [String]? = nil
+    var requiresRestart: Bool? = nil
 
     var isOAuth: Bool { auth == "oauth" }
     var isHTTP: Bool { url != nil }

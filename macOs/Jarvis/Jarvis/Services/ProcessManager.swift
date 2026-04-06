@@ -165,7 +165,7 @@ class ProcessManager: ObservableObject {
 
     /// Capture the user's login shell PATH so child processes can find npx, terraform, etc.
     /// macOS GUI apps inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
-    private static let shellEnvironment: [String: String] = {
+    static let shellEnvironment: [String: String] = {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
