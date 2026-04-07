@@ -1,10 +1,13 @@
+import asyncio
 import json
+import os
+import tempfile
 import threading
 import uuid
 from pathlib import Path
 
 from jarvis.config import (
-    TOKEN_DIR,
+    DATA_DIR,
     active_config_from_presets,
     load_presets,
     load_raw_config,
@@ -13,10 +16,35 @@ from jarvis.config import (
 from jarvis.probe import probe_all_servers
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+config_locks: dict[str, asyncio.Lock] = {}
+
+
+def get_lock(path: Path) -> asyncio.Lock:
+    return config_locks.setdefault(str(path.resolve()), asyncio.Lock())
+
+
+def atomic_write(path: Path, data: dict) -> None:
+    """Write *data* as JSON to *path* atomically via a temp file + os.replace."""
+    content = json.dumps(data, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 # ── REST API ──────────────────────────────────────────────────────────────────
 
 
-def create_api_app(default_config_path: Path, mcp_port: int):
+def create_api_app(mcp_port: int):
     """Build a Starlette REST API app that runs alongside the MCP server.
 
     Endpoints
@@ -42,20 +70,12 @@ def create_api_app(default_config_path: Path, mcp_port: int):
     def resolve_config(request: Request, param: str = "config") -> Path:
         override = request.query_params.get(param)
         if not override:
-            return default_config_path
+            return active_config_from_presets()
 
-        # Only allow the default config or preset files in the config directory
-        override_path = Path(override)
-        config_dir = TOKEN_DIR
-
-        # Resolve to absolute path and check it's within config directory
+        # Only allow files in the config directory (prevents path traversal)
         try:
-            resolved = override_path.resolve()
-            # Allow default config path
-            if resolved == default_config_path.resolve():
-                return resolved
-            # Allow files in the config directory (no traversal)
-            if resolved.parent == config_dir and resolved.suffix == ".json":
+            resolved = Path(override).resolve()
+            if resolved.parent == DATA_DIR and resolved.suffix == ".json":
                 return resolved
         except Exception:
             pass
@@ -87,7 +107,9 @@ def create_api_app(default_config_path: Path, mcp_port: int):
             except Exception as exc:
                 return JSONResponse({"error": str(exc)}, status_code=500)
         try:
-            config_path.write_text(json.dumps(await request.json(), indent=2))
+            body = await request.json()
+            async with get_lock(config_path):
+                atomic_write(config_path, body)
             return JSONResponse({"status": "ok"})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
@@ -97,17 +119,18 @@ def create_api_app(default_config_path: Path, mcp_port: int):
         config_path = resolve_config(request, param="path")
         try:
             enabled = (await request.json()).get("enabled", True)
-            raw = json.loads(config_path.read_text())
-            servers = raw.get("mcpServers", {})
-            if name not in servers:
-                return JSONResponse(
-                    {"error": f"Server '{name}' not found"}, status_code=404
-                )
-            if enabled:
-                servers[name].pop("enabled", None)
-            else:
-                servers[name]["enabled"] = False
-            config_path.write_text(json.dumps(raw, indent=2))
+            async with get_lock(config_path):
+                raw = json.loads(config_path.read_text())
+                servers = raw.get("mcpServers", {})
+                if name not in servers:
+                    return JSONResponse(
+                        {"error": f"Server '{name}' not found"}, status_code=404
+                    )
+                if enabled:
+                    servers[name].pop("enabled", None)
+                else:
+                    servers[name]["enabled"] = False
+                atomic_write(config_path, raw)
             return JSONResponse({"status": "ok"})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
@@ -118,23 +141,24 @@ def create_api_app(default_config_path: Path, mcp_port: int):
             body = await request.json()
             server_name, tool_name = body["server"], body["tool"]
             enabled = body.get("enabled", True)
-            raw = json.loads(config_path.read_text())
-            servers = raw.get("mcpServers", {})
-            if server_name not in servers:
-                return JSONResponse(
-                    {"error": f"Server '{server_name}' not found"}, status_code=404
-                )
-            srv = servers[server_name]
-            disabled = srv.get("disabledTools", [])
-            if enabled:
-                disabled = [t for t in disabled if t != tool_name]
-            elif tool_name not in disabled:
-                disabled.append(tool_name)
-            if disabled:
-                srv["disabledTools"] = disabled
-            else:
-                srv.pop("disabledTools", None)
-            config_path.write_text(json.dumps(raw, indent=2))
+            async with get_lock(config_path):
+                raw = json.loads(config_path.read_text())
+                servers = raw.get("mcpServers", {})
+                if server_name not in servers:
+                    return JSONResponse(
+                        {"error": f"Server '{server_name}' not found"}, status_code=404
+                    )
+                srv = servers[server_name]
+                disabled = srv.get("disabledTools", [])
+                if enabled:
+                    disabled = [t for t in disabled if t != tool_name]
+                elif tool_name not in disabled:
+                    disabled.append(tool_name)
+                if disabled:
+                    srv["disabledTools"] = disabled
+                else:
+                    srv.pop("disabledTools", None)
+                atomic_write(config_path, raw)
             return JSONResponse({"status": "ok"})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
@@ -217,11 +241,11 @@ def create_api_app(default_config_path: Path, mcp_port: int):
     )
 
 
-def start_api_thread(config_path: Path, mcp_port: int, api_port: int) -> None:
+def start_api_thread(mcp_port: int, api_port: int) -> None:
     """Start the REST API server in a daemon thread alongside the MCP server."""
     import uvicorn
 
-    app = create_api_app(config_path, mcp_port)
+    app = create_api_app(mcp_port)
     threading.Thread(
         target=uvicorn.run,
         kwargs={

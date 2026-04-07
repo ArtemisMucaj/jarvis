@@ -12,9 +12,14 @@ from key_value.aio.stores.disk import DiskStore
 
 ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 NON_STANDARD_KEYS = {"enabled", "disabledTools"}
-TOKEN_DIR = Path.home() / ".jarvis"
-PRESETS_PATH = TOKEN_DIR / "presets.json"
-token_storage = DiskStore(directory=str(TOKEN_DIR))
+DATA_DIR = Path.home() / ".jarvis"
+PRESETS_PATH = DATA_DIR / "presets.json"
+token_storage = DiskStore(directory=str(DATA_DIR))
+
+
+def clear_tokens() -> None:
+    """Wipe all OAuth tokens from the diskcache store."""
+    token_storage._cache.clear()
 
 
 # ── Preset management ─────────────────────────────────────────────────────────
@@ -26,12 +31,10 @@ def load_presets() -> dict:
         return json.loads(PRESETS_PATH.read_text())
     except FileNotFoundError:
         return {"presets": [], "activePresetID": None}
-    except Exception:
-        return {"presets": [], "activePresetID": None}
 
 
 def save_presets(data: dict) -> None:
-    TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     PRESETS_PATH.write_text(json.dumps(data, indent=2))
 
 
@@ -45,9 +48,11 @@ def active_config_from_presets() -> Path:
                 path = Path(p["filePath"])
                 if path.exists():
                     return path
-    default = TOKEN_DIR / "servers.json"
-    # Fallback for local development: repo root / servers.json
-    return default if default.exists() else Path(__file__).parent.parent.parent / "servers.json"
+    default = DATA_DIR / "servers.json"
+    if not default.exists():
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        default.write_text(json.dumps({"mcpServers": {}}, indent=2))
+    return default
 
 
 # ── Config utilities ──────────────────────────────────────────────────────────
