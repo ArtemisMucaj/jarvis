@@ -1,4 +1,4 @@
-"""Textual TUI apps for jarvis-mcp management.
+"""Textual TUI apps for jarvis management.
 
 Commands
 --------
@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,21 +19,33 @@ from textual.widgets import DataTable, Footer, Header, Static, Tree
 from textual import work
 
 
+def load_config(config_path: Path) -> tuple[dict[str, Any], str | None]:
+    """Read and parse the config file. Returns (raw_config, error_message)."""
+    try:
+        return json.loads(config_path.read_text()), None
+    except FileNotFoundError:
+        return {"mcpServers": {}}, None
+    except json.JSONDecodeError as exc:
+        return {"mcpServers": {}}, f"Config parse error: {exc}"
+
+
+
 # ── MCP Manager ───────────────────────────────────────────────────────────────
 
 
 class MCPManagerApp(App[None]):
     """Browse and toggle MCP servers and their tools.
 
-    Servers and tools shown with ☑/☐ toggle state.  Changes are written back
+    Servers and tools shown with [✓]/[ ] toggle state.  Changes are written back
     to the config file on quit.  Tool lists are probed from live servers in the
     background after the tree is first populated from the config.
     """
 
-    TITLE = "Jarvis MCP Manager"
+    TITLE = "Jarvis Manager"
     CSS = """
     Screen {
         layout: vertical;
+        background: $background;
     }
     Tree {
         height: 1fr;
@@ -69,20 +79,13 @@ class MCPManagerApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._load_config()
+        self.raw_config, err = load_config(self.config_path)
+        if err:
+            self._set_status(err)
         self._populate_tree()
         self._probe_all()
 
     # ── Config I/O ────────────────────────────────────────────────────────────
-
-    def _load_config(self) -> None:
-        try:
-            self.raw_config = json.loads(self.config_path.read_text())
-        except FileNotFoundError:
-            self.raw_config = {"mcpServers": {}}
-        except json.JSONDecodeError as exc:
-            self.raw_config = {"mcpServers": {}}
-            self._set_status(f"Config parse error: {exc}")
 
     def _save_config(self) -> None:
         """Persist toggle state back to the config file."""
@@ -97,13 +100,12 @@ class MCPManagerApp(App[None]):
             if name not in servers:
                 continue
 
-            # Enabled state (omit key when True to keep config minimal)
+            # Omit "enabled: true" to keep config minimal since true is the default
             if d["enabled"]:
                 servers[name].pop("enabled", None)
             else:
                 servers[name]["enabled"] = False
 
-            # Disabled tools (read from shared cache)
             if d.get("probed_tools") and name in self._disabled_tools_cache:
                 disabled_set = self._disabled_tools_cache[name]
                 disabled = sorted(disabled_set)
@@ -120,13 +122,11 @@ class MCPManagerApp(App[None]):
         tree = self.query_one(Tree)
         servers: dict = self.raw_config.get("mcpServers", {})
 
-        # Store shared disabled_tools sets indexed by server name
         self._disabled_tools_cache: dict[str, set[str]] = {}
 
         for name, srv in sorted(servers.items()):
             enabled = srv.get("enabled", True) is not False
-            mark = "☑" if enabled else "☐"
-            # Create shared set once per server and store reference
+            mark = "[✓]" if enabled else "[ ]"
             disabled_tools = set(srv.get("disabledTools", []))
             self._disabled_tools_cache[name] = disabled_tools
             node = tree.root.add(
@@ -157,16 +157,14 @@ class MCPManagerApp(App[None]):
                 continue
             node.data["probed_tools"] = [t["name"] for t in tools]
 
-            # Remove all existing children (placeholders)
             for child in list(node.children):
                 child.remove()
 
-            # Use the shared disabled_tools set from cache
             disabled = self._disabled_tools_cache.get(server_name, set())
             for tool in tools:
                 t_name = tool["name"]
                 t_enabled = t_name not in disabled
-                mark = "  ☑" if t_enabled else "  ☐"
+                mark = "  [✓]" if t_enabled else "  [ ]"
                 node.add_leaf(
                     f"{mark} {t_name}",
                     data={
@@ -187,21 +185,15 @@ class MCPManagerApp(App[None]):
     @work
     async def _probe_all(self) -> None:
         """Probe all enabled servers in the background (runs in app event loop)."""
-        from jarvis import probe_server
+        from jarvis.probe import probe_server
 
-        # Build the list of enabled servers from in-memory UI state instead of disk
         tree = self.query_one(Tree)
-        raw_servers = {}
         servers_config = self.raw_config.get("mcpServers", {})
-
-        for server_node in tree.root.children:
-            d = server_node.data
-            if not d or d.get("type") != "server":
-                continue
-            name = d["name"]
-            # Only probe servers that are enabled in the UI state
-            if d.get("enabled", True) and name in servers_config:
-                raw_servers[name] = servers_config[name]
+        raw_servers = {
+            d["name"]: servers_config[d["name"]]
+            for node in tree.root.children
+            if (d := node.data) and d.get("type") == "server" and d.get("enabled", True) and d["name"] in servers_config
+        }
 
         total = len(raw_servers)
         if total == 0:
@@ -214,8 +206,12 @@ class MCPManagerApp(App[None]):
             nonlocal done
             try:
                 tools = await asyncio.wait_for(probe_server(name, raw), timeout=30)
-            except Exception:
+            except (SystemExit, KeyboardInterrupt, GeneratorExit):
+                raise
+            except BaseException:
                 tools = []
+            if not self.is_running:
+                return
             self._update_server_tools(name, tools)
             done += 1
             if done < total:
@@ -239,7 +235,7 @@ class MCPManagerApp(App[None]):
 
         if d.get("type") == "server":
             d["enabled"] = not d["enabled"]
-            mark = "☑" if d["enabled"] else "☐"
+            mark = "[✓]" if d["enabled"] else "[ ]"
             cursor.label = f"{mark} {d['name']}"
 
         elif d.get("type") == "tool":
@@ -248,9 +244,8 @@ class MCPManagerApp(App[None]):
                 self._set_status("Enable the server first before toggling its tools.")
                 return
             d["enabled"] = not d["enabled"]
-            mark = "  ☑" if d["enabled"] else "  ☐"
+            mark = "  [✓]" if d["enabled"] else "  [ ]"
             cursor.label = f"{mark} {d['name']}"
-            # Mutate the shared disabled_tools set
             server_name = d.get("server")
             tool_name = d["name"]
             if server_name and server_name in self._disabled_tools_cache:
@@ -267,7 +262,6 @@ class MCPManagerApp(App[None]):
     def action_refresh(self) -> None:
         """Re-probe all servers and refresh the tree."""
         tree = self.query_one(Tree)
-        # Clear probed tools for enabled servers based on in-memory UI state
         for node in tree.root.children:
             d = node.data
             if d and d.get("type") == "server" and d.get("enabled", True):
@@ -332,80 +326,36 @@ class AuthManagerApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._load_config()
+        self.raw_config, _ = load_config(self.config_path)
         self._populate_table()
-
-    # ── Config ────────────────────────────────────────────────────────────────
-
-    def _load_config(self) -> None:
-        try:
-            self.raw_config = json.loads(self.config_path.read_text())
-        except Exception:
-            self.raw_config = {"mcpServers": {}}
 
     # ── Table ─────────────────────────────────────────────────────────────────
 
     def _populate_table(self) -> None:
         table = self.query_one(DataTable)
-        # Only add columns if table is empty (prevent duplicates after clear)
         if not table.columns:
             table.add_columns("Server", "Auth Type", "Token Files")
 
         servers: dict = self.raw_config.get("mcpServers", {})
         self._server_names = sorted(servers.keys())
 
-        token_count = self._count_token_files()
+        from jarvis.config import token_storage
+
+        all_keys = list(token_storage._cache.iterkeys())
 
         for name in self._server_names:
             srv = servers[name]
             auth = srv.get("auth", "")
             auth_label = auth.upper() if auth else "—"
             if auth == "oauth":
-                status = (
-                    f"{token_count} file(s) in ~/.jarvis"
-                    if token_count
-                    else "none found"
-                )
+                url = srv.get("url", "")
+                count = sum(1 for k in all_keys if url and url in k)
+                status = f"{count} token(s) cached" if count else "none cached"
             else:
                 status = "N/A"
             table.add_row(name, auth_label, status, key=name)
 
         self._set_status("[l] Login (OAuth)  [x] Clear all tokens  [q] Quit")
-
-    def _count_token_files(self) -> int:
-        """Count non-config files in TOKEN_DIR (heuristic for token presence)."""
-        token_dir = Path.home() / ".jarvis"
-        # Start with base exclusions
-        excluded = {"servers.json", "presets.json", "jarvis.log"}
-
-        # Add active config file if it's in token_dir
-        if self.config_path.parent == token_dir:
-            excluded.add(self.config_path.name)
-
-        # Add preset config files that reside in token_dir
-        try:
-            presets_file = token_dir / "presets.json"
-            if presets_file.exists():
-                import json
-
-                data = json.loads(presets_file.read_text())
-                for preset in data.get("presets", []):
-                    file_path = Path(preset.get("filePath", ""))
-                    if file_path.parent == token_dir:
-                        excluded.add(file_path.name)
-        except Exception:
-            pass
-
-        try:
-            return sum(
-                1
-                for f in token_dir.iterdir()
-                if f.is_file()
-                and f.name not in excluded
-                and not f.name.endswith(".log")
-            )
-        except Exception:
-            return 0
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -430,91 +380,34 @@ class AuthManagerApp(App[None]):
             f"Starting OAuth for '{server}'… complete the flow in your browser."
         )
 
-        # Suspend the TUI so the browser/callback interaction has a clean terminal
-        async with self.suspend():
-            # For frozen builds (PyInstaller), relaunch current executable
-            if getattr(sys, "frozen", False):
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "--config",
-                        str(self.config_path),
-                        "--auth",
-                        server,
-                    ],
-                )
-            else:
-                jarvis_script = Path(__file__).with_name("jarvis.py")
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        str(jarvis_script),
-                        "--config",
-                        str(self.config_path),
-                        "--auth",
-                        server,
-                    ],
-                )
+        from jarvis.probe import probe_server
 
-        if result.returncode == 0:
-            self._set_status(f"✓ Authenticated '{server}' successfully.")
-        else:
-            self._set_status(
-                f"✗ Auth failed for '{server}' (exit {result.returncode})."
-            )
+        async def do_login() -> None:
+            try:
+                tools = await probe_server(server, srv_config)
+                self._set_status(
+                    f"✓ Authenticated '{server}' — {len(tools)} tool(s) available."
+                )
+                table = self.query_one(DataTable)
+                table.clear(columns=False)
+                self._server_names = []
+                self._populate_table()
+            except Exception as exc:
+                self._set_status(f"✗ Auth failed for '{server}': {exc}")
+
+        self.run_worker(do_login())
 
     def action_logout(self) -> None:
-        """Delete all non-config files from TOKEN_DIR (clears all OAuth tokens)."""
-        token_dir = Path.home() / ".jarvis"
-        # Start with base exclusions
-        excluded = {"servers.json", "presets.json", "jarvis.log"}
+        """Wipe all cached OAuth tokens."""
+        from jarvis.config import clear_tokens
 
-        # Add active config file if it's in token_dir
-        if self.config_path.parent == token_dir:
-            excluded.add(self.config_path.name)
-
-        # Add preset config files that reside in token_dir
         try:
-            presets_file = token_dir / "presets.json"
-            if presets_file.exists():
-                data = json.loads(presets_file.read_text())
-                for preset in data.get("presets", []):
-                    file_path = Path(preset.get("filePath", ""))
-                    if file_path.parent == token_dir:
-                        excluded.add(file_path.name)
-        except Exception:
-            pass
-
-        cleared = 0
-        errors = 0
-        try:
-            for f in token_dir.iterdir():
-                if (
-                    f.is_file()
-                    and f.name not in excluded
-                    and not f.name.endswith(".log")
-                ):
-                    try:
-                        f.unlink()
-                        cleared += 1
-                    except Exception:
-                        errors += 1
+            clear_tokens()
         except Exception as exc:
-            self._set_status(f"Error scanning token dir: {exc}")
+            self._set_status(f"✗ Failed to clear tokens: {exc}")
             return
 
-        if errors:
-            self._set_status(
-                f"Cleared {cleared} token file(s); {errors} could not be removed."
-            )
-        else:
-            self._set_status(
-                f"✓ Cleared {cleared} token file(s) from {token_dir}"
-                if cleared
-                else "No token files found."
-            )
-
-        # Refresh table to show updated counts
+        self._set_status("✓ All OAuth tokens cleared.")
         table = self.query_one(DataTable)
         table.clear(columns=False)
         self._server_names = []
