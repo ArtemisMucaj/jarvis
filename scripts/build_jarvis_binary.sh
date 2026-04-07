@@ -6,7 +6,7 @@ command -v uv >/dev/null 2>&1 || { echo "ERROR: uv is not installed. See https:/
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$REPO_ROOT/macOs/Jarvis/Jarvis/Resources"
 
-[[ -f "$REPO_ROOT/jarvis.py" ]] || { echo "ERROR: jarvis.py not found at $REPO_ROOT"; exit 1; }
+[[ -f "$REPO_ROOT/src/jarvis/__main__.py" ]] || { echo "ERROR: src/jarvis/__main__.py not found at $REPO_ROOT"; exit 1; }
 
 echo "==> Building jarvis binary with PyInstaller..."
 
@@ -27,8 +27,7 @@ uv run --with 'pyinstaller==6.19.0' pyinstaller \
   --copy-metadata starlette \
   --copy-metadata uvicorn \
   --copy-metadata textual \
-  --add-data "$REPO_ROOT/jarvis_tui.py:." \
-  "$REPO_ROOT/jarvis.py"
+  "$REPO_ROOT/src/jarvis/__main__.py"
 
 echo "==> Done. Binary at: $OUT_DIR/jarvis"
 ls -lh "$OUT_DIR/jarvis"

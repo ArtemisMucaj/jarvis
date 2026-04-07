@@ -1,4 +1,4 @@
-"""Textual TUI apps for jarvis-mcp management.
+"""Textual TUI apps for jarvis management.
 
 Commands
 --------
@@ -32,7 +32,7 @@ class MCPManagerApp(App[None]):
     background after the tree is first populated from the config.
     """
 
-    TITLE = "Jarvis MCP Manager"
+    TITLE = "Jarvis Manager"
     CSS = """
     Screen {
         layout: vertical;
@@ -187,7 +187,7 @@ class MCPManagerApp(App[None]):
     @work
     async def _probe_all(self) -> None:
         """Probe all enabled servers in the background (runs in app event loop)."""
-        from jarvis import probe_server
+        from jarvis.probe import probe_server
 
         # Build the list of enabled servers from in-memory UI state instead of disk
         tree = self.query_one(Tree)
@@ -444,11 +444,11 @@ class AuthManagerApp(App[None]):
                     ],
                 )
             else:
-                jarvis_script = Path(__file__).with_name("jarvis.py")
                 result = subprocess.run(
                     [
                         sys.executable,
-                        str(jarvis_script),
+                        "-m",
+                        "jarvis",
                         "--config",
                         str(self.config_path),
                         "--auth",

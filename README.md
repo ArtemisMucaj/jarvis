@@ -29,7 +29,7 @@ chmod +x jarvis-<version>-linux-x86_64
 ### From source (requires Python 3.11+ and uv)
 
 ```bash
-uv run python jarvis.py --http 7070
+uv run python -m jarvis --http 7070
 ```
 
 ## Configuration
@@ -122,13 +122,13 @@ You can run Jarvis directly from the command line (requires `uv`).
 ### stdio (default)
 
 ```bash
-uv run python jarvis.py
+uv run python -m jarvis
 ```
 
 ### HTTP server
 
 ```bash
-uv run python jarvis.py --http 7070
+uv run python -m jarvis --http 7070
 ```
 
 ### Specifying a config file
@@ -136,20 +136,20 @@ uv run python jarvis.py --http 7070
 Override the active config file with `--config`:
 
 ```bash
-uv run python jarvis.py --config /path/to/servers.json --http 7070
+uv run python -m jarvis --config /path/to/servers.json --http 7070
 ```
 
 When `--config` is omitted, Jarvis resolves the config in this priority order:
 1. Active preset from `~/.jarvis/presets.json`
 2. `~/.jarvis/servers.json`
-3. `servers.json` in the script directory
+3. `servers.json` in the repo root directory
 
 ### List available tools
 
 Probe all configured servers and print every tool as JSON, then exit:
 
 ```bash
-uv run python jarvis.py --list-tools
+uv run python -m jarvis --list-tools
 ```
 
 ### Code Mode
@@ -157,7 +157,7 @@ uv run python jarvis.py --list-tools
 By default Jarvis uses BM25 search to surface relevant tools. Pass `--code-mode` to switch to FastMCP's Code Mode, where the LLM writes sandboxed Python scripts that batch multiple tool calls in a single step:
 
 ```bash
-uv run python jarvis.py --http 7070 --code-mode
+uv run python -m jarvis --http 7070 --code-mode
 ```
 
 Code Mode can also be toggled in the macOS app under **Settings**.
@@ -167,13 +167,13 @@ Code Mode can also be toggled in the macOS app under **Settings**.
 Servers with `"auth": "oauth"` require a one-time browser login. Authenticate all OAuth servers at once:
 
 ```bash
-uv run python jarvis.py --auth
+uv run python -m jarvis --auth
 ```
 
 Or target a specific server by name:
 
 ```bash
-uv run python jarvis.py --auth my-server
+uv run python -m jarvis --auth my-server
 ```
 
 Tokens are persisted to `~/.jarvis/` and reused automatically on subsequent runs.
@@ -185,7 +185,7 @@ Jarvis ships a terminal UI (powered by [Textual](https://textual.textualize.io/)
 ### Manage servers and tools
 
 ```bash
-uv run python jarvis.py mcp
+uv run python -m jarvis mcp
 ```
 
 Opens a tree view of all configured servers and their tools. Use **Space** to enable/disable a server or an individual tool, **r** to re-probe servers, and **q** to save changes and quit.
@@ -193,7 +193,7 @@ Opens a tree view of all configured servers and their tools. Use **Space** to en
 ### Manage OAuth authentication
 
 ```bash
-uv run python jarvis.py auth
+uv run python -m jarvis auth
 ```
 
 Opens a table of all configured servers and their auth type. Use **l** to trigger the OAuth login flow for the selected server (opens the browser) and **x** to clear all cached tokens.
