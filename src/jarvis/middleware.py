@@ -1,17 +1,30 @@
-"""Middleware that surfaces auth failures from proxied tool calls.
+"""Middleware that auto-refreshes OAuth tokens on 401 errors from proxied tools.
 
 When a proxied MCP server returns a 401/Unauthorized error inside a tool
-result (e.g. "GitLab API error: 401 Unauthorized"), FastMCP's OAuth handler
-never sees it because the MCP transport itself returned HTTP 200.  This
-middleware detects those errors and re-raises them with an actionable hint,
-so the user knows to run ``jarvis --auth <server>`` to refresh their token.
+result (e.g. "GitLab API error: 401 Unauthorized"), FastMCP's own OAuth
+handler never sees it because the MCP transport itself returned HTTP 200.
 
-The stored OAuth token (including its refresh_token) is intentionally left
-intact so that ``jarvis --auth`` can use the refresh token to silently obtain
-a new access token rather than forcing a full browser-based re-auth flow.
+This middleware:
+1. Catches those ToolErrors.
+2. Calls ``probe_server()`` directly — a function that opens a fresh
+   connection to the backend using the same shared ``token_storage``.
+   FastMCP's OAuth handler will use the stored refresh token to obtain a
+   new access token silently (no browser needed when the refresh token is
+   still valid).  The refreshed token is written back to disk.
+3. Re-raises the original error with a "please retry" hint.
+
+On retry the connection is rebuilt from scratch (MCPConfigTransport creates
+a new StatefulProxyClient per tool call), so the fresh disk token is picked
+up automatically — no proxy restart required.
+
+A short timeout (5 s) guards against blocking on a browser-based full
+re-auth flow: if the refresh token has also expired and a browser would need
+to open, we fall back to directing the user to ``jarvis --auth <server>``.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import mcp.types as mt
 from fastmcp.exceptions import ToolError
@@ -19,6 +32,7 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools.base import ToolResult
 
 _AUTH_MARKERS = ("401", "unauthorized")
+_REFRESH_TIMEOUT = 5.0  # seconds; silent refresh via refresh_token should be instant
 
 
 def _is_auth_error(text: str) -> bool:
@@ -27,11 +41,12 @@ def _is_auth_error(text: str) -> bool:
 
 
 class AuthErrorMiddleware(Middleware):
-    """Re-raise 401/Unauthorized ToolErrors with an actionable re-auth hint.
+    """On 401/Unauthorized ToolErrors from OAuth-backed servers, try to
+    refresh the access token inline then tell the caller to retry.
 
-    Only servers whose config includes ``"auth": "oauth"`` receive the
-    ``jarvis --auth`` hint.  Other backends (e.g. stdio with an env-var
-    token) get a generic message about checking their token configuration.
+    The stored refresh_token is left intact; ``probe_server()`` exchanges it
+    for a new access token without any user interaction.  If the refresh
+    token is also expired (browser flow needed), a fallback message is shown.
     """
 
     def __init__(self, raw_servers: dict[str, dict]) -> None:
@@ -63,18 +78,49 @@ class AuthErrorMiddleware(Middleware):
                 raise
 
             if srv_config.get("auth") == "oauth":
+                refreshed = await self._try_refresh(server_name, srv_config)
+                if refreshed:
+                    raise ToolError(
+                        f"{error_text}\n\n"
+                        f"The OAuth token for '{server_name}' has been refreshed. "
+                        "Please retry your request."
+                    ) from exc
                 raise ToolError(
                     f"{error_text}\n\n"
-                    f"Authentication failed for '{server_name}'. "
-                    f"Run 'jarvis --auth {server_name}' to refresh the OAuth token."
+                    f"Authentication failed for '{server_name}' and the token could "
+                    "not be refreshed automatically (refresh token may have expired). "
+                    f"Run 'jarvis --auth {server_name}' to re-authenticate."
                 ) from exc
-            else:
-                raise ToolError(
-                    f"{error_text}\n\n"
-                    f"Authentication failed for '{server_name}'. "
-                    f"Check the token configuration for this server "
-                    f"(e.g. the GITLAB_TOKEN environment variable)."
-                ) from exc
+
+            # Non-OAuth server (e.g. stdio with GITLAB_TOKEN env var).
+            raise ToolError(
+                f"{error_text}\n\n"
+                f"Authentication failed for '{server_name}'. "
+                "Check the token configuration for this server "
+                "(e.g. the GITLAB_TOKEN environment variable)."
+            ) from exc
+
+    async def _try_refresh(self, server_name: str, srv_config: dict) -> bool:
+        """Probe the server to trigger a silent OAuth token refresh.
+
+        Returns True if the refresh succeeded within ``_REFRESH_TIMEOUT``
+        seconds (i.e. the refresh token was still valid and no browser
+        interaction was required).
+        """
+        from jarvis.probe import probe_server
+
+        try:
+            await asyncio.wait_for(
+                probe_server(server_name, srv_config),
+                timeout=_REFRESH_TIMEOUT,
+            )
+            return True
+        except asyncio.TimeoutError:
+            # Timed out — likely waiting for browser-based re-auth, not a
+            # silent refresh.  Cancel and let the caller handle it.
+            return False
+        except Exception:
+            return False
 
     def _find_server(self, tool_name: str) -> tuple[str, dict] | tuple[None, None]:
         """Return ``(server_name, config)`` whose prefix matches *tool_name*."""
