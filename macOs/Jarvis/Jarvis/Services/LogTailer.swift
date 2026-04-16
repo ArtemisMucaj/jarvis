@@ -44,14 +44,6 @@ final class LogTailer: ObservableObject {
         watchFile()
     }
 
-    func clear() {
-        stop()
-        try? "".write(to: logURL, atomically: true, encoding: .utf8)
-        logContent = ""
-        offset = 0
-        watchFile()
-    }
-
     // MARK: - kqueue watcher
 
     private func watchFile() {
