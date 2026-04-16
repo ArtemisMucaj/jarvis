@@ -63,8 +63,6 @@ struct PresetsView: View {
                 HStack(spacing: 12) {
                     Text("Server Logs")
                     Spacer()
-                    Button("Clear", action: tailer.clear)
-                        .buttonStyle(.borderless)
                     Button("Open in Editor") { NSWorkspace.shared.open(tailer.logURL) }
                         .buttonStyle(.borderless)
                 }
