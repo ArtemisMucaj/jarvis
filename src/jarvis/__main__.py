@@ -33,18 +33,14 @@ from jarvis.middleware import AuthErrorMiddleware
 from jarvis.api import start_api_thread
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
-# The macOS app captures stderr → ~/.jarvis/jarvis.log, so all logging goes
-# to stderr.  Rich is already installed (FastMCP dependency) and gives us
-# pretty, timestamped output that matches the existing log format.
-# Pass --json-logs to emit one JSON object per line instead (easier for agents).
-
-_json_logs = "--json-logs" in sys.argv
+# All output goes to stderr. The macOS app captures stderr → ~/.jarvis/jarvis.log.
+# JSON is the default format so both Jarvis and FastMCP emit structured logs.
 
 log = logging.getLogger("jarvis")
 log.setLevel(logging.INFO)
 
 
-class _JsonFormatter(logging.Formatter):
+class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         record.message = record.getMessage()
         ts = (
@@ -63,25 +59,12 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(data, separators=(",", ":"))
 
 
-if not log.handlers:
-    if _json_logs:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(_JsonFormatter())
-    else:
-        try:
-            from rich.logging import RichHandler
-
-            handler = RichHandler(
-                show_path=True,
-                rich_tracebacks=True,
-                tracebacks_show_locals=False,
-            )
-        except ImportError:
-            handler = logging.StreamHandler(sys.stderr)
-            handler.setFormatter(
-                logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
-            )
-    log.addHandler(handler)
+root = logging.getLogger()
+if not root.handlers:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(JsonFormatter())
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
 
 
 # Priority: --config flag  >  active preset in presets.json  >  ~/.jarvis/servers.json
@@ -127,7 +110,6 @@ if subcmd == "help" or "--help" in filtered_argv or "-h" in filtered_argv:
         "  --config PATH     Use a specific config file\n"
         "  --http PORT       Run as an HTTP server on PORT (management UI)\n"
         "  --code-mode       Enable code mode transform\n"
-        "  --json-logs       Emit one JSON object per log line (for agents/machines)\n"
         "  --help, -h        Show this message and exit\n"
         "\n"
         "With no command or options, runs as a stdio MCP server.\n"
@@ -335,7 +317,7 @@ if "--http" in sys.argv:
             timeout_graceful_shutdown=2,
             lifespan="on",
             ws="websockets-sansio",
-            log_level="info",
+            log_config=None,
         )
         await uvicorn.Server(cfg).serve()
 
