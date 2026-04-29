@@ -104,6 +104,20 @@ Jarvis reads from `~/.jarvis/servers.json`. The format follows the standard MCP 
 { "disabledTools": ["dangerous_tool", "noisy_tool"] }
 ```
 
+**Add search keyword hints** for tools whose descriptions lack common synonyms:
+```json
+{
+  "toolHints": {
+    "exa": {
+      "web_fetch_exa": "browse visit open crawl scrape url link page",
+      "web_search_advanced_exa": "company research people person linkedin academic papers arxiv news"
+    }
+  }
+}
+```
+
+`toolHints` is a top-level key (not inside `mcpServers`). Keys are server names matching `mcpServers`; values are tool-name → extra keyword string pairs. Jarvis appends the hint text to each tool's description before building the BM25 search index, so small models can find tools via synonyms that are missing from the upstream MCP server's own descriptions. The original description is never modified on the backend.
+
 **Environment variable substitution** in `env` values:
 ```json
 { "env": { "API_KEY": "${MY_API_KEY}" } }
