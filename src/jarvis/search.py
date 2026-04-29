@@ -1,12 +1,15 @@
-"""Jarvis-specific BM25 search transform with improved tool descriptions."""
+"""Jarvis search transforms: improved BM25 descriptions and tool-hint augmentation."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Any
 
 from fastmcp.server.context import Context
+from fastmcp.server.transforms import GetToolNext, Transform
 from fastmcp.server.transforms.search import BM25SearchTransform
 from fastmcp.tools.base import Tool, ToolResult
+from fastmcp.utilities.versions import VersionSpec
 
 
 class JarvisSearchTransform(BM25SearchTransform):
@@ -102,3 +105,38 @@ class JarvisSearchTransform(BM25SearchTransform):
             return await ctx.fastmcp.call_tool(name, arguments)
 
         return Tool.from_function(fn=call_tool, name=self._call_tool_name)
+
+
+class ToolHintsTransform(Transform):
+    """Append extra search-keyword hints to tool descriptions.
+
+    Improves BM25 discoverability for tools whose upstream descriptions lack
+    common synonyms.  Hints are appended as a hidden suffix that the BM25
+    indexer sees but that is invisible to the model (it only reads the tool
+    description when calling the tool, not when searching).
+
+    Args:
+        hints: Flat mapping of namespaced tool name → extra keyword string,
+               e.g. ``{"exa_web_fetch_exa": "browse visit scrape crawl"}``.
+               Produced by ``jarvis.config.get_tool_hints()``.
+    """
+
+    def __init__(self, hints: dict[str, str]) -> None:
+        self._hints = hints
+
+    def _augment(self, tool: Tool) -> Tool:
+        extra = self._hints.get(tool.name)
+        if not extra:
+            return tool
+        base = (tool.description or "").rstrip()
+        new_desc = f"{base}\n\nAlso known as / related: {extra}" if base else extra
+        return tool.model_copy(update={"description": new_desc})
+
+    async def list_tools(self, tools: Sequence[Tool]) -> Sequence[Tool]:
+        return [self._augment(t) for t in tools]
+
+    async def get_tool(
+        self, name: str, call_next: GetToolNext, *, version: VersionSpec | None = None
+    ) -> Tool | None:
+        tool = await call_next(name, version=version)
+        return self._augment(tool) if tool is not None else None

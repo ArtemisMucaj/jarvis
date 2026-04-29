@@ -27,9 +27,11 @@ from jarvis.config import (
     active_config_from_presets,
     configure_servers,
     get_disabled_tools,
+    get_tool_hints,
     load_raw_config,
 )
 from jarvis.middleware import AuthErrorMiddleware
+from jarvis.search import JarvisSearchTransform, ToolHintsTransform
 from jarvis.api import start_api_thread
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -157,6 +159,10 @@ def build_mcp(cfg_path: Path, name: str) -> FastMCP:
         log.info("Disabled tools: %s", ", ".join(sorted(disabled)))
         m.disable(names=disabled)
     m.add_middleware(AuthErrorMiddleware(raw_servers))
+    hints = get_tool_hints(cfg_path)
+    if hints:
+        log.info("Tool hints loaded for: %s", ", ".join(sorted(hints)))
+        m.add_transform(ToolHintsTransform(hints))
     m.add_transform(CodeMode() if code_mode else JarvisSearchTransform(max_results=5))
     return m
 
