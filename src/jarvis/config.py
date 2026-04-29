@@ -109,3 +109,31 @@ def get_disabled_tools(config_path: Path) -> set[str]:
         for tool in srv.get("disabledTools", []):
             disabled.add(f"{name}_{tool}")
     return disabled
+
+
+def get_tool_hints(config_path: Path) -> dict[str, str]:
+    """Return extra search-keyword hints keyed by namespaced tool name.
+
+    Reads the top-level ``toolHints`` object from the config file.  The
+    expected structure is::
+
+        {
+          "toolHints": {
+            "<server-name>": {
+              "<tool-name>": "extra keywords appended to the description"
+            }
+          }
+        }
+
+    Returns a flat dict like ``{"exa_web_fetch_exa": "browse scrape ..."}``
+    that callers can pass directly to ``ToolHintsTransform``.
+    """
+    raw = json.loads(config_path.read_text())
+    flat: dict[str, str] = {}
+    for server_name, tools in raw.get("toolHints", {}).items():
+        if not isinstance(tools, dict):
+            continue
+        for tool_name, hint in tools.items():
+            if isinstance(hint, str) and hint.strip():
+                flat[f"{server_name}_{tool_name}"] = hint.strip()
+    return flat
