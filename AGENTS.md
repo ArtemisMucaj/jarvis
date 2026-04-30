@@ -7,10 +7,11 @@ Jarvis is an MCP proxy that aggregates multiple MCP servers behind 2 synthetic t
 ## Layout
 
 ```
-src/jarvis/        # the package (6 modules)
+src/jarvis/        # the package (7 modules)
   __main__.py      # CLI entrypoint — arg parsing, server startup
   config.py        # DATA_DIR, presets, config loading, OAuth wiring
   proxy.py         # builds FastMCP proxy (stdio vs HTTP client selection)
+  search.py        # JarvisSearchTransform (BM25 + improved descriptions), ToolHintsTransform
   api.py           # REST management API (runs on port+1)
   probe.py         # server/tool discovery
   tui.py           # Textual TUIs (mcp manager, auth manager)
@@ -55,6 +56,9 @@ bash scripts/build_jarvis_binary_linux.sh
 - `config.py` resolves `DATA_DIR` and creates `token_storage` (DiskStore) **at module level**. The env var `JARVIS_DATA_DIR` overrides the default `~/.jarvis` — this is the only mechanism for test isolation.
 - `proxy.py` chooses `StatefulProxyClient` (persistent subprocess) for stdio servers and `ProxyClient` (fresh connection) for HTTP/SSE. The stateful clients are pinned to `mcp._stateful_clients` to avoid GC.
 - The hatchling build uses `packages = ["src/jarvis"]` — the wheel package is `jarvis`, not `jarvis_mcp`.
+- `search.py` contains two transforms applied in `build_mcp` (in order):
+  - `ToolHintsTransform` — appends extra keyword strings to tool descriptions before BM25 indexing. Controlled by the top-level `toolHints` key in `servers.json` (nested by server name, then tool name). Applied first so the BM25 index sees the augmented text.
+  - `JarvisSearchTransform` — subclass of `BM25SearchTransform` with rewritten `search_tools` / `call_tool` descriptions that make the two-step workflow explicit and include DO/DON'T examples to prevent small models from pasting full task text into the search query.
 
 ## macOS app
 
