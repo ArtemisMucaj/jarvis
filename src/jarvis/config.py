@@ -111,6 +111,12 @@ def get_disabled_tools(config_path: Path) -> set[str]:
     return disabled
 
 
+SKILL_DIRS: list[Path] = [
+    Path.home() / ".agents" / "skills",
+    Path.home() / ".claude" / "skills",
+]
+
+
 def get_tool_hints(config_path: Path) -> dict[str, str]:
     """Return extra search-keyword hints keyed by namespaced tool name.
 
