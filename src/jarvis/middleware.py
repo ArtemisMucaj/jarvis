@@ -26,11 +26,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 
 import mcp.types as mt
 from fastmcp.exceptions import ToolError
+from fastmcp.resources.base import Resource, ResourceResult
+from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.tools.base import ToolResult
+from fastmcp.tools.base import Tool, ToolResult
 
 log = logging.getLogger("jarvis.middleware")
 
@@ -136,3 +139,78 @@ class AuthErrorMiddleware(Middleware):
             if tool_name.startswith(f"{name}_"):
                 return name, cfg
         return None, None
+
+
+SKILL_TOOL_NAMES = frozenset({"list_resources", "read_resource"})
+SKILL_RESOURCE_SCHEME = "skill://"
+
+
+def _http_request_wants_skills() -> bool:
+    """True when the active HTTP request opted into skills via ``?skills=true``.
+
+    Returns True when there is no HTTP request at all (stdio mode), so the
+    middleware is a no-op outside HTTP — stdio gates skills via ``--skills``.
+    """
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        return True
+    value = request.query_params.get("skills", "").lower()
+    return value in ("true", "1", "yes")
+
+
+class SkillsGateMiddleware(Middleware):
+    """Hide skill tools / resources from clients that don't pass ``?skills=true``.
+
+    Skills are mounted on the inner proxy unconditionally so we can keep a
+    single set of backend subprocesses, but most MCP clients (e.g. opencode)
+    have native skills support and don't want them re-exposed via tools.
+    Clients that DO need them (e.g. Zed) opt in by hitting
+    ``http://HOST:PORT/mcp?skills=true``.
+    """
+
+    async def on_list_tools(
+        self,
+        context: MiddlewareContext[mt.ListToolsRequest],
+        call_next,
+    ) -> Sequence[Tool]:
+        tools = await call_next(context)
+        if _http_request_wants_skills():
+            return tools
+        return [t for t in tools if t.name not in SKILL_TOOL_NAMES]
+
+    async def on_list_resources(
+        self,
+        context: MiddlewareContext[mt.ListResourcesRequest],
+        call_next,
+    ) -> Sequence[Resource]:
+        resources = await call_next(context)
+        if _http_request_wants_skills():
+            return resources
+        return [r for r in resources if not str(r.uri).startswith(SKILL_RESOURCE_SCHEME)]
+
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[mt.CallToolRequestParams],
+        call_next,
+    ) -> ToolResult:
+        if (
+            context.message.name in SKILL_TOOL_NAMES
+            and not _http_request_wants_skills()
+        ):
+            raise ToolError(
+                f"Tool '{context.message.name}' requires ?skills=true on the /mcp URL."
+            )
+        return await call_next(context)
+
+    async def on_read_resource(
+        self,
+        context: MiddlewareContext[mt.ReadResourceRequestParams],
+        call_next,
+    ) -> ResourceResult:
+        uri = str(context.message.uri)
+        if uri.startswith(SKILL_RESOURCE_SCHEME) and not _http_request_wants_skills():
+            raise ToolError(
+                f"Resource '{uri}' requires ?skills=true on the /mcp URL."
+            )
+        return await call_next(context)

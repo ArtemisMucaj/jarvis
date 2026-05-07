@@ -31,7 +31,7 @@ from jarvis.config import (
     get_tool_hints,
     load_raw_config,
 )
-from jarvis.middleware import AuthErrorMiddleware
+from jarvis.middleware import AuthErrorMiddleware, SkillsGateMiddleware
 from jarvis.search import JarvisSearchTransform, ToolHintsTransform
 from jarvis.api import start_api_thread
 
@@ -113,12 +113,14 @@ if subcmd == "help" or "--help" in filtered_argv or "-h" in filtered_argv:
         "  --config PATH     Use a specific config file\n"
         "  --http PORT       Run as an HTTP server on PORT (management UI)\n"
         "  --code-mode       Enable code mode transform\n"
+        "  --skills          Mount ~/.agents/skills and ~/.claude/skills (stdio mode)\n"
         "  --help, -h        Show this message and exit\n"
         "\n"
         "With no command or options, runs as a stdio MCP server.\n"
         "\n"
         "HTTP mode:\n"
-        "  MCP endpoint:     http://HOST:PORT/mcp\n"
+        "  MCP endpoint:     http://HOST:PORT/mcp           (no skills)\n"
+        "                    http://HOST:PORT/mcp?skills=true (skills mounted)\n"
         "  Management API:   http://HOST:(PORT+1)/api/...\n"
         "  Preset activation, server toggles, and tool toggles hot-swap the\n"
         "  active config live \u2014 connected clients keep their sessions."
@@ -138,10 +140,18 @@ if subcmd == "auth":
     sys.exit(0)
 
 code_mode = "--code-mode" in sys.argv
+stdio_skills = "--skills" in sys.argv
 
 
-def build_mcp(cfg_path: Path, name: str) -> FastMCP:
-    """Load *cfg_path* and return a fully configured FastMCP proxy."""
+def build_mcp(cfg_path: Path, name: str, skills: bool = False) -> FastMCP:
+    """Load *cfg_path* and return a fully configured FastMCP proxy.
+
+    When *skills* is True and at least one of ``SKILL_DIRS`` exists, the
+    SkillsDirectoryProvider is mounted and ``list_resources``/``read_resource``
+    are added to the always-visible tool set. Default is off so the bare
+    ``/mcp`` endpoint stays minimal; opt in via ``--skills`` (stdio) or
+    ``?skills=true`` (HTTP) for clients that need them.
+    """
     mcp_dict, raw_servers = load_raw_config(cfg_path)
     disabled = get_disabled_tools(cfg_path)
     cfg = MCPConfig.model_validate(mcp_dict)
@@ -157,7 +167,7 @@ def build_mcp(cfg_path: Path, name: str) -> FastMCP:
 
     m = build_proxy(cfg, name)
 
-    skill_dirs = [d for d in SKILL_DIRS if d.is_dir()]
+    skill_dirs = [d for d in SKILL_DIRS if d.is_dir()] if skills else []
     skills_enabled = bool(skill_dirs)
     if skills_enabled:
         from fastmcp.server.providers.fastmcp_provider import FastMCPProvider
@@ -177,6 +187,8 @@ def build_mcp(cfg_path: Path, name: str) -> FastMCP:
         log.info("Disabled tools: %s", ", ".join(sorted(disabled)))
         m.disable(names=disabled)
     m.add_middleware(AuthErrorMiddleware(raw_servers))
+    if skills_enabled:
+        m.add_middleware(SkillsGateMiddleware())
     hints = get_tool_hints(cfg_path)
     if hints:
         log.info("Tool hints loaded for: %s", ", ".join(sorted(hints)))
@@ -214,12 +226,16 @@ if "--http" in sys.argv:
     import uvicorn
 
     # ── Build the proxy ───────────────────────────────────────────────────────
-    # The outer shell is a thin FastMCP that hosts a single FastMCPProvider
-    # wrapping the real inner proxy. Swapping ``swappable_provider.server``
-    # instantly changes which config's tools are visible to all connected
-    # sessions — no session disruption, no reconnect required.
+    # One inner proxy with skills always mounted (when SKILL_DIRS exist). The
+    # SkillsGateMiddleware (added inside build_mcp) hides the list_resources /
+    # read_resource tools from clients that don't pass ``?skills=true`` on the
+    # /mcp URL — keeping a single set of backend subprocesses while letting
+    # different MCP clients opt in or out per-connection.
+    # Swapping ``swappable_provider.server`` instantly changes which config's
+    # tools are visible to all connected sessions — no session disruption,
+    # no reconnect required.
 
-    initial_inner = build_mcp(config_path, "jarvis-proxy")
+    initial_inner = build_mcp(config_path, "jarvis-proxy", skills=True)
     log.info("Starting HTTP mode — MCP on :%d, API on :%d", port, port + 1)
     outer_mcp = FastMCP("jarvis")
     swappable_provider = FastMCPProvider(initial_inner)
@@ -301,7 +317,7 @@ if "--http" in sys.argv:
             """
             new_cfg = active_config_from_presets()
             try:
-                new_inner = build_mcp(new_cfg, "jarvis-proxy")
+                new_inner = build_mcp(new_cfg, "jarvis-proxy", skills=True)
             except Exception as exc:
                 log.error("Config reload failed: %s", exc)
                 return
@@ -353,6 +369,6 @@ if "--http" in sys.argv:
     asyncio.run(run_http())
 
 else:
-    mcp = build_mcp(config_path, "jarvis")
-    log.info("Starting stdio mode")
+    mcp = build_mcp(config_path, "jarvis", skills=stdio_skills)
+    log.info("Starting stdio mode (skills=%s)", stdio_skills)
     mcp.run(show_banner=False)
