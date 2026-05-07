@@ -29,7 +29,7 @@ import logging
 from collections.abc import Sequence
 
 import mcp.types as mt
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.resources.base import Resource, ResourceResult
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
@@ -210,7 +210,7 @@ class SkillsGateMiddleware(Middleware):
     ) -> ResourceResult:
         uri = str(context.message.uri)
         if uri.startswith(SKILL_RESOURCE_SCHEME) and not _http_request_wants_skills():
-            raise ToolError(
+            raise ResourceError(
                 f"Resource '{uri}' requires ?skills=true on the /mcp URL."
             )
         return await call_next(context)
