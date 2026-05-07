@@ -158,10 +158,19 @@ def build_mcp(cfg_path: Path, name: str) -> FastMCP:
     m = build_proxy(cfg, name)
 
     skill_dirs = [d for d in get_skill_dirs() if d.is_dir()]
-    if skill_dirs:
+    skills_enabled = bool(skill_dirs)
+    if skills_enabled:
+        from fastmcp.server.providers.fastmcp_provider import FastMCPProvider
         from fastmcp.server.providers.skills import SkillsDirectoryProvider
+        from fastmcp.server.transforms import ResourcesAsTools
 
-        m.add_provider(SkillsDirectoryProvider(roots=skill_dirs))
+        # Dedicated inner server so the resulting list_resources / read_resource
+        # tools are scoped strictly to skills — without this they would also
+        # surface every other resource on the proxy (datadog://, exa://, ...).
+        skills_server = FastMCP("skills")
+        skills_server.add_provider(SkillsDirectoryProvider(roots=skill_dirs))
+        skills_server.add_transform(ResourcesAsTools(skills_server))
+        m.add_provider(FastMCPProvider(skills_server))
         log.info("Skills mounted from: %s", ", ".join(str(d) for d in skill_dirs))
 
     if disabled:
@@ -172,7 +181,12 @@ def build_mcp(cfg_path: Path, name: str) -> FastMCP:
     if hints:
         log.info("Tool hints loaded for: %s", ", ".join(sorted(hints)))
         m.add_transform(ToolHintsTransform(hints))
-    m.add_transform(CodeMode() if code_mode else JarvisSearchTransform(max_results=5))
+    always_visible = ["list_resources", "read_resource"] if skills_enabled else None
+    m.add_transform(
+        CodeMode()
+        if code_mode
+        else JarvisSearchTransform(max_results=5, always_visible=always_visible)
+    )
     return m
 
 
