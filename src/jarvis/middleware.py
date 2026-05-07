@@ -149,7 +149,7 @@ def _http_request_wants_skills() -> bool:
     """True when the active HTTP request opted into skills via ``?skills=true``.
 
     Returns True when there is no HTTP request at all (stdio mode), so the
-    middleware is a no-op outside HTTP — stdio gates skills via ``--skills``.
+    middleware is a no-op outside HTTP — stdio never mounts skills anyway.
     """
     try:
         request = get_http_request()

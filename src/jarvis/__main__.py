@@ -113,7 +113,6 @@ if subcmd == "help" or "--help" in filtered_argv or "-h" in filtered_argv:
         "  --config PATH     Use a specific config file\n"
         "  --http PORT       Run as an HTTP server on PORT (management UI)\n"
         "  --code-mode       Enable code mode transform\n"
-        "  --skills          Mount ~/.agents/skills and ~/.claude/skills (stdio mode)\n"
         "  --help, -h        Show this message and exit\n"
         "\n"
         "With no command or options, runs as a stdio MCP server.\n"
@@ -140,7 +139,6 @@ if subcmd == "auth":
     sys.exit(0)
 
 code_mode = "--code-mode" in sys.argv
-stdio_skills = "--skills" in sys.argv
 
 
 def build_mcp(cfg_path: Path, name: str, skills: bool = False) -> FastMCP:
@@ -149,8 +147,8 @@ def build_mcp(cfg_path: Path, name: str, skills: bool = False) -> FastMCP:
     When *skills* is True and at least one of ``SKILL_DIRS`` exists, the
     SkillsDirectoryProvider is mounted and ``list_resources``/``read_resource``
     are added to the always-visible tool set. Default is off so the bare
-    ``/mcp`` endpoint stays minimal; opt in via ``--skills`` (stdio) or
-    ``?skills=true`` (HTTP) for clients that need them.
+    ``/mcp`` endpoint stays minimal; HTTP clients opt in via
+    ``?skills=true``. Stdio mode never mounts skills.
     """
     mcp_dict, raw_servers = load_raw_config(cfg_path)
     disabled = get_disabled_tools(cfg_path)
@@ -369,6 +367,6 @@ if "--http" in sys.argv:
     asyncio.run(run_http())
 
 else:
-    mcp = build_mcp(config_path, "jarvis", skills=stdio_skills)
-    log.info("Starting stdio mode (skills=%s)", stdio_skills)
+    mcp = build_mcp(config_path, "jarvis")
+    log.info("Starting stdio mode")
     mcp.run(show_banner=False)
