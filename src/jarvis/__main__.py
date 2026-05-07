@@ -24,10 +24,10 @@ from fastmcp.experimental.transforms.code_mode import CodeMode
 from jarvis.search import JarvisSearchTransform
 
 from jarvis.config import (
+    SKILL_DIRS,
     active_config_from_presets,
     configure_servers,
     get_disabled_tools,
-    get_skill_dirs,
     get_tool_hints,
     load_raw_config,
 )
@@ -157,7 +157,7 @@ def build_mcp(cfg_path: Path, name: str) -> FastMCP:
 
     m = build_proxy(cfg, name)
 
-    skill_dirs = [d for d in get_skill_dirs() if d.is_dir()]
+    skill_dirs = [d for d in SKILL_DIRS if d.is_dir()]
     skills_enabled = bool(skill_dirs)
     if skills_enabled:
         from fastmcp.server.providers.fastmcp_provider import FastMCPProvider

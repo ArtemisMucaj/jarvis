@@ -1,13 +1,12 @@
-"""Tests for skills wiring — get_skill_dirs() and SkillsDirectoryProvider mount."""
+"""Tests for skills wiring — SkillsDirectoryProvider mount + dedup behavior."""
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from fastmcp import FastMCP
 from fastmcp.server.providers.skills import SkillsDirectoryProvider
 
-from jarvis.config import get_skill_dirs
+from jarvis.config import SKILL_DIRS
 
 
 def _make_skill(parent: Path, name: str, description: str, body: str) -> None:
@@ -18,27 +17,12 @@ def _make_skill(parent: Path, name: str, description: str, body: str) -> None:
     )
 
 
-class TestGetSkillDirs:
-    def test_defaults_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("JARVIS_SKILL_DIRS", raising=False)
-        assert get_skill_dirs() == [
+class TestSkillDirs:
+    def test_default_paths(self) -> None:
+        assert SKILL_DIRS == [
             Path.home() / ".agents" / "skills",
             Path.home() / ".claude" / "skills",
         ]
-
-    def test_env_override_splits_on_colon(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        a = tmp_path / "a"
-        b = tmp_path / "b"
-        monkeypatch.setenv("JARVIS_SKILL_DIRS", f"{a}:{b}")
-        assert get_skill_dirs() == [a, b]
-
-    def test_env_blank_falls_back_to_defaults(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("JARVIS_SKILL_DIRS", "  ")
-        assert get_skill_dirs()[0] == Path.home() / ".agents" / "skills"
 
 
 class TestSkillsDirectoryProviderMount:
