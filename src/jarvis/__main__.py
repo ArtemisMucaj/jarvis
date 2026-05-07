@@ -27,6 +27,7 @@ from jarvis.config import (
     active_config_from_presets,
     configure_servers,
     get_disabled_tools,
+    get_skill_dirs,
     get_tool_hints,
     load_raw_config,
 )
@@ -155,6 +156,14 @@ def build_mcp(cfg_path: Path, name: str) -> FastMCP:
     )
 
     m = build_proxy(cfg, name)
+
+    skill_dirs = [d for d in get_skill_dirs() if d.is_dir()]
+    if skill_dirs:
+        from fastmcp.server.providers.skills import SkillsDirectoryProvider
+
+        m.add_provider(SkillsDirectoryProvider(roots=skill_dirs))
+        log.info("Skills mounted from: %s", ", ".join(str(d) for d in skill_dirs))
+
     if disabled:
         log.info("Disabled tools: %s", ", ".join(sorted(disabled)))
         m.disable(names=disabled)

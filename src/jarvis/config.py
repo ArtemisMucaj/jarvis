@@ -111,6 +111,22 @@ def get_disabled_tools(config_path: Path) -> set[str]:
     return disabled
 
 
+def get_skill_dirs() -> list[Path]:
+    """Return the list of skill directories to scan.
+
+    Reads ``JARVIS_SKILL_DIRS`` as a colon-separated list of paths. Falls back
+    to the conventional locations used by agent harnesses:
+    ``~/.agents/skills`` and ``~/.claude/skills``.
+    """
+    env = os.environ.get("JARVIS_SKILL_DIRS", "")
+    if env.strip():
+        return [Path(p) for p in env.split(":") if p.strip()]
+    return [
+        Path.home() / ".agents" / "skills",
+        Path.home() / ".claude" / "skills",
+    ]
+
+
 def get_tool_hints(config_path: Path) -> dict[str, str]:
     """Return extra search-keyword hints keyed by namespaced tool name.
 
