@@ -145,7 +145,7 @@ SKILL_TOOL_NAMES = frozenset({"list_resources", "read_resource"})
 SKILL_RESOURCE_SCHEME = "skill://"
 
 
-def _http_request_wants_skills() -> bool:
+def http_request_wants_skills() -> bool:
     """True when the active HTTP request opted into skills via ``?skills=true``.
 
     Returns True when there is no HTTP request at all (stdio mode), so the
@@ -175,7 +175,7 @@ class SkillsGateMiddleware(Middleware):
         call_next,
     ) -> Sequence[Tool]:
         tools = await call_next(context)
-        if _http_request_wants_skills():
+        if http_request_wants_skills():
             return tools
         return [t for t in tools if t.name not in SKILL_TOOL_NAMES]
 
@@ -185,7 +185,7 @@ class SkillsGateMiddleware(Middleware):
         call_next,
     ) -> Sequence[Resource]:
         resources = await call_next(context)
-        if _http_request_wants_skills():
+        if http_request_wants_skills():
             return resources
         return [r for r in resources if not str(r.uri).startswith(SKILL_RESOURCE_SCHEME)]
 
@@ -196,7 +196,7 @@ class SkillsGateMiddleware(Middleware):
     ) -> ToolResult:
         if (
             context.message.name in SKILL_TOOL_NAMES
-            and not _http_request_wants_skills()
+            and not http_request_wants_skills()
         ):
             raise ToolError(
                 f"Tool '{context.message.name}' requires ?skills=true on the /mcp URL."
@@ -209,7 +209,7 @@ class SkillsGateMiddleware(Middleware):
         call_next,
     ) -> ResourceResult:
         uri = str(context.message.uri)
-        if uri.startswith(SKILL_RESOURCE_SCHEME) and not _http_request_wants_skills():
+        if uri.startswith(SKILL_RESOURCE_SCHEME) and not http_request_wants_skills():
             raise ResourceError(
                 f"Resource '{uri}' requires ?skills=true on the /mcp URL."
             )
