@@ -5,8 +5,6 @@ import AppKit
 struct PresetsView: View {
     @EnvironmentObject var state: AppState
 
-    @StateObject private var tailer = LogTailer()
-
     var body: some View {
         Form {
             Section {
@@ -56,27 +54,11 @@ struct PresetsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-
-            Section {
-                LogSectionView(logContent: tailer.logContent)
-            } header: {
-                HStack(spacing: 12) {
-                    Text("Server Logs")
-                    Spacer()
-                    Button("Open in Editor") { NSWorkspace.shared.open(tailer.logURL) }
-                        .buttonStyle(.borderless)
-                }
-            }
         }
         .formStyle(.grouped)
         .navigationTitle("Presets")
         .onAppear {
-            tailer.start()
-            // Sync preset list from server if it's running
             if state.processManager.isRunning { state.fetchPresets() }
-        }
-        .onDisappear {
-            tailer.stop()
         }
     }
 
@@ -211,29 +193,3 @@ struct PresetRowView: View {
     }
 }
 
-// MARK: - Log section
-
-struct LogSectionView: View {
-    let logContent: String
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                Text(logContent)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .textSelection(.enabled)
-                Color.clear
-                    .frame(height: 1)
-                    .id("logBottom")
-            }
-            .frame(height: 300)
-            .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .onChange(of: logContent) { _, _ in
-                proxy.scrollTo("logBottom", anchor: .bottom)
-            }
-        }
-    }
-}
