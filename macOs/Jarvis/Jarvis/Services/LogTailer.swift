@@ -33,15 +33,22 @@ final class LogTailer: ObservableObject {
     /// Read the last 10 000 lines from scratch and (re)start the watcher.
     func reload() {
         stop()
-        guard let content = try? String(contentsOf: logURL, encoding: .utf8) else {
-            logContent = "No logs found at \(logURL.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
-            watchFile()
-            return
+        let url = logURL
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let (newContent, newOffset) = await Task.detached(priority: .utility) { () -> (String, UInt64) in
+                guard let raw = try? String(contentsOf: url, encoding: .utf8) else {
+                    let fallback = "No logs found at \(url.path(percentEncoded: false))\n\nThe log file will be created when the server starts."
+                    return (fallback, 0)
+                }
+                let lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
+                let trimmed = lines.suffix(10_000).joined(separator: "\n")
+                return (trimmed, UInt64(raw.utf8.count))
+            }.value
+            self.logContent = newContent
+            self.offset = newOffset
+            self.watchFile()
         }
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
-        logContent = lines.suffix(10_000).joined(separator: "\n")
-        offset = UInt64(logContent.utf8.count)
-        watchFile()
     }
 
     // MARK: - kqueue watcher
