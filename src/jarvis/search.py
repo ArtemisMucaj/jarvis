@@ -165,7 +165,11 @@ class JarvisSearchTransform(BM25SearchTransform):
               name="slack_send_message",
                 arguments={"channel": "#general", "text": "Deploy complete"}
             """
-            if name in {transform._call_tool_name, transform._search_tool_name}:
+            if name in {
+                transform._call_tool_name,
+                transform._search_tool_name,
+                transform._load_tool_name,
+            }:
                 raise ValueError(
                     f"'{name}' is a synthetic search tool and cannot be called via call_tool"
                 )

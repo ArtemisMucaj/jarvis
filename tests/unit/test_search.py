@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
+
 from jarvis.config import get_server_descriptions
 from jarvis.search import JarvisSearchTransform
 
@@ -61,6 +63,15 @@ class TestGetServerDescriptions:
         path = data_dir / "cfg.json"
         path.write_text(json.dumps({"mcpServers": {}}))
         assert get_server_descriptions(path) == {}
+
+    def test_skips_non_dict_server_entry(self, data_dir: Path) -> None:
+        path = data_dir / "cfg.json"
+        path.write_text(
+            json.dumps(
+                {"mcpServers": {"bad": "not-a-dict", "ok": {"url": "http://o", "description": "D"}}}
+            )
+        )
+        assert get_server_descriptions(path) == {"ok": "D"}
 
 
 # ── JarvisSearchTransform: synthetic tool descriptions ────────────────────────
@@ -131,3 +142,15 @@ class TestLoadTools:
     def test_render_overview_empty_points_to_search(self) -> None:
         text = JarvisSearchTransform(server_descriptions={})._render_server_overview()
         assert "search_tools" in text
+
+    async def test_load_tool_coroutine_returns_overview(self) -> None:
+        transform = JarvisSearchTransform(
+            server_descriptions={"github": "Issues and PRs"}
+        )
+        result = await transform._make_load_tool().fn()
+        assert "github: Issues and PRs" in result
+
+    async def test_call_tool_blocks_load_tools(self) -> None:
+        transform = JarvisSearchTransform(server_descriptions={"x": "y"})
+        with pytest.raises(ValueError, match="synthetic search tool"):
+            await transform._make_call_tool().fn(name="load_tools", ctx=None)
