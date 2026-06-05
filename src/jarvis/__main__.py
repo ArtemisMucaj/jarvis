@@ -28,11 +28,10 @@ from jarvis.config import (
     active_config_from_presets,
     configure_servers,
     get_disabled_tools,
-    get_tool_hints,
+    get_server_descriptions,
     load_raw_config,
 )
 from jarvis.middleware import AuthErrorMiddleware, SkillsGateMiddleware
-from jarvis.search import JarvisSearchTransform, ToolHintsTransform
 from jarvis.api import start_api_thread
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -187,15 +186,19 @@ def build_mcp(cfg_path: Path, name: str, skills: bool = False) -> FastMCP:
     m.add_middleware(AuthErrorMiddleware(raw_servers))
     if skills_enabled:
         m.add_middleware(SkillsGateMiddleware())
-    hints = get_tool_hints(cfg_path)
-    if hints:
-        log.info("Tool hints loaded for: %s", ", ".join(sorted(hints)))
-        m.add_transform(ToolHintsTransform(hints))
+    server_descriptions = get_server_descriptions(cfg_path)
+    described = sorted(n for n, d in server_descriptions.items() if d)
+    if described:
+        log.info("Server descriptions loaded for: %s", ", ".join(described))
     always_visible = ["list_resources", "read_resource"] if skills_enabled else None
     m.add_transform(
         CodeMode()
         if code_mode
-        else JarvisSearchTransform(max_results=5, always_visible=always_visible)
+        else JarvisSearchTransform(
+            max_results=5,
+            always_visible=always_visible,
+            server_descriptions=server_descriptions,
+        )
     )
     return m
 

@@ -126,6 +126,23 @@ struct ServerDetailView: View {
                 }
             }
 
+            // Description
+            Section {
+                TextField(
+                    "What this server is for",
+                    text: optionalStringBinding(for: \.description),
+                    axis: .vertical
+                )
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...5)
+            } header: {
+                Text("Description")
+            } footer: {
+                Text("Shown to agents via load_tools so they know which provider to search.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             // Environment
             Section {
                 if let env = stagedServer.env, !env.isEmpty {

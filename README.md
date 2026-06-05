@@ -2,7 +2,7 @@
 
 Your agent knows about 200 tools. It uses 5. The other 195 are just burning context on every single request.
 
-Jarvis fixes that. It proxies all your MCP servers behind a single endpoint and exposes just **2 tools** to the agent — `search_tools` and `call_tool`. The agent describes what it wants in plain language, gets back the top matching tools with full schemas, and calls the right one. You can connect 10 servers and 300 tools; the agent still sees 2.
+Jarvis fixes that. It proxies all your MCP servers behind a single endpoint and exposes just **3 tools** to the agent — `load_tools`, `search_tools`, and `call_tool`. The agent calls `load_tools` to see which providers are available, describes what it wants in plain language to `search_tools`, gets back the top matching tools with full schemas, and calls the right one with `call_tool`. You can connect 10 servers and 300 tools; the agent still sees 3.
 
 For agents that need to do more in fewer round-trips, Jarvis also ships **Code Mode**: instead of searching and calling tools one at a time, the agent writes a small sandboxed Python script that batches multiple tool calls in a single step. Less back-and-forth, more done per turn.
 
@@ -104,19 +104,19 @@ Jarvis reads from `~/.jarvis/servers.json`. The format follows the standard MCP 
 { "disabledTools": ["dangerous_tool", "noisy_tool"] }
 ```
 
-**Add search keyword hints** for tools whose descriptions lack common synonyms:
+**Describe a server's purpose** so agents know what it's for:
 ```json
 {
-  "toolHints": {
-    "exa": {
-      "web_fetch_exa": "browse visit open crawl scrape url link page",
-      "web_search_advanced_exa": "company research people person linkedin academic papers arxiv news"
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "description": "GitHub: issues, pull requests, commits, releases, code search"
     }
   }
 }
 ```
 
-`toolHints` is a top-level key (not inside `mcpServers`). Keys are server names matching `mcpServers`; values are tool-name → extra keyword string pairs. Jarvis appends the hint text to each tool's description before building the BM25 search index, so small models can find tools via synonyms that are missing from the upstream MCP server's own descriptions. The original description is never modified on the backend.
+`description` is a per-server field inside `mcpServers` (it's a native MCP server-config field, so it doesn't interfere with anything). Jarvis surfaces these through the synthetic **`load_tools`** tool — the first step of the discovery workflow. An agent calls `load_tools` to see which providers are proxied and what each is for, then `search_tools` to find a specific tool by keyword, then `call_tool` to run it. This gives agents a cheap, always-available overview without loading every tool's full description into context.
 
 **Environment variable substitution** in `env` values:
 ```json
@@ -127,7 +127,7 @@ Jarvis reads from `~/.jarvis/servers.json`. The format follows the standard MCP 
 
 ### macOS app
 
-The menu bar app keeps Jarvis running as a persistent HTTP server. From the menu bar icon you can start/stop the server, copy the endpoint URL, and open the main window to browse servers, switch presets, and tail the log. Server and tool toggles, as well as preset switches, apply live — no restart needed.
+The menu bar app keeps Jarvis running as a persistent HTTP server. From the menu bar icon you can start/stop the server, copy the endpoint URL, and open the main window to browse servers, switch presets, and tail the log. Each server's detail view has a **Description** field (surfaced to agents via `load_tools`), plus URL/command/args, environment variables, and per-tool toggles. Server and tool toggles, as well as preset switches, apply live — no restart needed.
 
 ### TUI
 
@@ -161,7 +161,7 @@ If a proxied tool call returns a 401/Unauthorized error, Jarvis silently exchang
 
 ### Default — BM25 search
 
-The agent uses `search_tools` to find relevant tools by natural language query, then `call_tool` to invoke them. Keeps context minimal regardless of how many tools are configured.
+The agent optionally calls `load_tools` for an overview of the proxied servers (and their per-server `description`s), uses `search_tools` to find relevant tools by natural language query, then `call_tool` to invoke them. Keeps context minimal regardless of how many tools are configured.
 
 ### Code Mode
 

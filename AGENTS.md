@@ -2,7 +2,7 @@
 
 ## What this is
 
-Jarvis is an MCP proxy that aggregates multiple MCP servers behind 2 synthetic tools (`search_tools` + `call_tool`). Python 3.11+, managed with **uv**.
+Jarvis is an MCP proxy that aggregates multiple MCP servers behind 3 synthetic tools (`load_tools` → `search_tools` → `call_tool`). Python 3.11+, managed with **uv**.
 
 ## Layout
 
@@ -11,7 +11,7 @@ src/jarvis/        # the package (7 modules)
   __main__.py      # CLI entrypoint — arg parsing, server startup
   config.py        # DATA_DIR, presets, config loading, OAuth wiring
   proxy.py         # builds FastMCP proxy (stdio vs HTTP client selection)
-  search.py        # JarvisSearchTransform (BM25 + improved descriptions), ToolHintsTransform
+  search.py        # JarvisSearchTransform (BM25 + load_tools/search_tools/call_tool descriptions)
   api.py           # REST management API (runs on port+1)
   probe.py         # server/tool discovery
   tui.py           # Textual TUIs (mcp manager, auth manager)
@@ -56,9 +56,9 @@ bash scripts/build_jarvis_binary_linux.sh
 - `config.py` resolves `DATA_DIR` and creates `token_storage` (DiskStore) **at module level**. The env var `JARVIS_DATA_DIR` overrides the default `~/.jarvis` — this is the only mechanism for test isolation.
 - `proxy.py` chooses `StatefulProxyClient` (persistent subprocess) for stdio servers and `ProxyClient` (fresh connection) for HTTP/SSE. The stateful clients are pinned to `mcp._stateful_clients` to avoid GC.
 - The hatchling build uses `packages = ["src/jarvis"]` — the wheel package is `jarvis`, not `jarvis_mcp`.
-- `search.py` contains two transforms applied in `build_mcp` (in order):
-  - `ToolHintsTransform` — appends extra keyword strings to tool descriptions before BM25 indexing. Controlled by the top-level `toolHints` key in `servers.json` (nested by server name, then tool name). Applied first so the BM25 index sees the augmented text.
-  - `JarvisSearchTransform` — subclass of `BM25SearchTransform` with rewritten `search_tools` / `call_tool` descriptions that make the two-step workflow explicit and include DO/DON'T examples to prevent small models from pasting full task text into the search query.
+- `search.py` contains `JarvisSearchTransform`, applied in `build_mcp` — a subclass of `BM25SearchTransform` that exposes three always-visible synthetic tools instead of two:
+  - `load_tools` — STEP 1. Returns a cheap overview of which backend servers are proxied and what each is for, sourced from the per-server `description` field in `servers.json` (via `config.get_server_descriptions`). The server-level analog of how skills always expose their one-line descriptions; lets an agent orient before searching.
+  - `search_tools` / `call_tool` — STEPS 2 and 3, with rewritten descriptions that make the load → search → call workflow explicit and include DO/DON'T examples to prevent small models from pasting full task text into the search query.
 
 ## macOS app
 
