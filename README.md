@@ -127,7 +127,7 @@ Jarvis reads from `~/.jarvis/servers.json`. The format follows the standard MCP 
 
 ### macOS app
 
-The menu bar app keeps Jarvis running as a persistent HTTP server. From the menu bar icon you can start/stop the server, copy the endpoint URL, and open the main window to browse servers, switch presets, and tail the log. Server and tool toggles, as well as preset switches, apply live — no restart needed.
+The menu bar app keeps Jarvis running as a persistent HTTP server. From the menu bar icon you can start/stop the server, copy the endpoint URL, and open the main window to browse servers, switch presets, and tail the log. Each server's detail view has a **Description** field (surfaced to agents via `load_tools`), plus URL/command/args, environment variables, and per-tool toggles. Server and tool toggles, as well as preset switches, apply live — no restart needed.
 
 ### TUI
 
