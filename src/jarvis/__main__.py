@@ -32,7 +32,6 @@ from jarvis.config import (
     load_raw_config,
 )
 from jarvis.middleware import AuthErrorMiddleware, SkillsGateMiddleware
-from jarvis.search import JarvisSearchTransform
 from jarvis.api import start_api_thread
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
