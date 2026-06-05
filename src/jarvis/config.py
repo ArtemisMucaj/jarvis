@@ -117,29 +117,33 @@ SKILL_DIRS: list[Path] = [
 ]
 
 
-def get_tool_hints(config_path: Path) -> dict[str, str]:
-    """Return extra search-keyword hints keyed by namespaced tool name.
+def get_server_descriptions(config_path: Path) -> dict[str, str]:
+    """Return ``{server_name: description}`` for each enabled server.
 
-    Reads the top-level ``toolHints`` object from the config file.  The
-    expected structure is::
+    Reads the optional ``description`` field from each entry under
+    ``mcpServers``.  ``description`` is a native MCP server-config field, so
+    it validates and round-trips through ``MCPConfig`` untouched — no special
+    stripping is required.  Servers without a description map to an empty
+    string; disabled servers are skipped.
+
+    The result feeds the ``load_tools`` overview (see
+    :class:`jarvis.search.JarvisSearchTransform`) so agents can see which
+    backends are proxied, and what each is for, before searching for a
+    specific tool.
+
+    Example config::
 
         {
-          "toolHints": {
-            "<server-name>": {
-              "<tool-name>": "extra keywords appended to the description"
-            }
+          "mcpServers": {
+            "github": {"url": "...", "description": "Issues, PRs, commits, code search"}
           }
         }
-
-    Returns a flat dict like ``{"exa_web_fetch_exa": "browse scrape ..."}``
-    that callers can pass directly to ``ToolHintsTransform``.
     """
     raw = json.loads(config_path.read_text())
-    flat: dict[str, str] = {}
-    for server_name, tools in raw.get("toolHints", {}).items():
-        if not isinstance(tools, dict):
+    out: dict[str, str] = {}
+    for name, srv in raw.get("mcpServers", {}).items():
+        if not isinstance(srv, dict) or srv.get("enabled", True) is False:
             continue
-        for tool_name, hint in tools.items():
-            if isinstance(hint, str) and hint.strip():
-                flat[f"{server_name}_{tool_name}"] = hint.strip()
-    return flat
+        desc = srv.get("description")
+        out[name] = desc.strip() if isinstance(desc, str) else ""
+    return out
