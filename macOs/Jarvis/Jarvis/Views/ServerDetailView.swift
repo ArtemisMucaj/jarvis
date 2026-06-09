@@ -47,6 +47,23 @@ struct ServerDetailView: View {
         )
     }
 
+    // Header names whose values are secrets and should be masked on screen.
+    private func isSensitiveHeader(_ key: String) -> Bool {
+        ["authorization", "cookie", "x-api-key"].contains(key.lowercased())
+    }
+
+    // Trim and validate an HTTP header name (RFC 7230 token). Returns the
+    // normalized name, or nil if it's empty or contains illegal characters.
+    private func normalizedHeaderName(_ raw: String) -> String? {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+        let isToken = key.range(
+            of: #"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"#,
+            options: .regularExpression
+        ) != nil
+        return isToken ? key : nil
+    }
+
     private func syncArgsToServer() {
         if argItems.isEmpty {
             stagedServer.args = nil
@@ -153,14 +170,20 @@ struct ServerDetailView: View {
                             HStack {
                                 Text(key)
                                     .frame(minWidth: 100, alignment: .leading)
-                                TextField("Value", text: Binding(
+                                let valueBinding = Binding(
                                     get: { stagedServer.headers?[key] ?? "" },
                                     set: { newValue in
                                         stagedServer.headers?[key] = newValue
                                         hasChanges = true
                                     }
-                                ))
-                                .textFieldStyle(.roundedBorder)
+                                )
+                                if isSensitiveHeader(key) {
+                                    SecureField("Value", text: valueBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                } else {
+                                    TextField("Value", text: valueBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                }
                                 Button {
                                     stagedServer.headers?.removeValue(forKey: key)
                                     if stagedServer.headers?.isEmpty == true {
@@ -179,14 +202,19 @@ struct ServerDetailView: View {
                         TextField("Key", text: $newHeaderKey)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 100)
-                        TextField("Value", text: $newHeaderValue)
-                            .textFieldStyle(.roundedBorder)
+                        if isSensitiveHeader(newHeaderKey.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                            SecureField("Value", text: $newHeaderValue)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            TextField("Value", text: $newHeaderValue)
+                                .textFieldStyle(.roundedBorder)
+                        }
                         Button {
-                            guard !newHeaderKey.isEmpty else { return }
+                            guard let key = normalizedHeaderName(newHeaderKey) else { return }
                             if stagedServer.headers == nil {
                                 stagedServer.headers = [:]
                             }
-                            stagedServer.headers?[newHeaderKey] = newHeaderValue
+                            stagedServer.headers?[key] = newHeaderValue
                             hasChanges = true
                             newHeaderKey = ""
                             newHeaderValue = ""
@@ -195,7 +223,7 @@ struct ServerDetailView: View {
                                 .foregroundStyle(.green)
                         }
                         .buttonStyle(.borderless)
-                        .disabled(newHeaderKey.isEmpty)
+                        .disabled(normalizedHeaderName(newHeaderKey) == nil)
                     }
                 } header: {
                     Text("Headers")
