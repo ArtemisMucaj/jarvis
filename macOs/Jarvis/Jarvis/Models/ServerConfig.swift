@@ -14,6 +14,11 @@ struct MCPServer: Codable, Equatable {
 
     // http transport
     var url: String?
+    // Authorization (and other) headers sent on every request to a remote
+    // HTTP/SSE server. Standard MCP field. Declared here so the app
+    // round-trips it instead of silently dropping it when re-encoding the
+    // config on save — JSONDecoder discards keys the struct doesn't model.
+    var headers: [String: String]?
 
     // shared
     var transport: String?

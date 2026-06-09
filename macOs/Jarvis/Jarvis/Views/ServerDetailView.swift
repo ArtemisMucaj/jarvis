@@ -7,6 +7,8 @@ struct ServerDetailView: View {
     @EnvironmentObject var state: AppState
     @State private var newEnvKey = ""
     @State private var newEnvValue = ""
+    @State private var newHeaderKey = ""
+    @State private var newHeaderValue = ""
     @State private var stagedServer: MCPServer
     @State private var hasChanges = false
 
@@ -141,6 +143,67 @@ struct ServerDetailView: View {
                 Text("Shown to agents via load_tools so they know which provider to search.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            // Headers (HTTP/SSE only) — e.g. Authorization tokens for remote servers.
+            if server.isHTTP {
+                Section {
+                    if let headers = stagedServer.headers, !headers.isEmpty {
+                        ForEach(headers.keys.sorted(), id: \.self) { key in
+                            HStack {
+                                Text(key)
+                                    .frame(minWidth: 100, alignment: .leading)
+                                TextField("Value", text: Binding(
+                                    get: { stagedServer.headers?[key] ?? "" },
+                                    set: { newValue in
+                                        stagedServer.headers?[key] = newValue
+                                        hasChanges = true
+                                    }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                Button {
+                                    stagedServer.headers?.removeValue(forKey: key)
+                                    if stagedServer.headers?.isEmpty == true {
+                                        stagedServer.headers = nil
+                                    }
+                                    hasChanges = true
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    HStack {
+                        TextField("Key", text: $newHeaderKey)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 100)
+                        TextField("Value", text: $newHeaderValue)
+                            .textFieldStyle(.roundedBorder)
+                        Button {
+                            guard !newHeaderKey.isEmpty else { return }
+                            if stagedServer.headers == nil {
+                                stagedServer.headers = [:]
+                            }
+                            stagedServer.headers?[newHeaderKey] = newHeaderValue
+                            hasChanges = true
+                            newHeaderKey = ""
+                            newHeaderValue = ""
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .foregroundStyle(.green)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(newHeaderKey.isEmpty)
+                    }
+                } header: {
+                    Text("Headers")
+                } footer: {
+                    Text("Sent on every request, e.g. Authorization: Bearer <token>.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             // Environment
