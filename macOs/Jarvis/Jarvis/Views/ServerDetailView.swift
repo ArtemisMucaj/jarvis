@@ -7,6 +7,8 @@ struct ServerDetailView: View {
     @EnvironmentObject var state: AppState
     @State private var newEnvKey = ""
     @State private var newEnvValue = ""
+    @State private var newHeaderKey = ""
+    @State private var newHeaderValue = ""
     @State private var stagedServer: MCPServer
     @State private var hasChanges = false
 
@@ -43,6 +45,23 @@ struct ServerDetailView: View {
                 hasChanges = true
             }
         )
+    }
+
+    // Header names whose values are secrets and should be masked on screen.
+    private func isSensitiveHeader(_ key: String) -> Bool {
+        ["authorization", "cookie", "x-api-key"].contains(key.lowercased())
+    }
+
+    // Trim and validate an HTTP header name (RFC 7230 token). Returns the
+    // normalized name, or nil if it's empty or contains illegal characters.
+    private func normalizedHeaderName(_ raw: String) -> String? {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+        let isToken = key.range(
+            of: #"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"#,
+            options: .regularExpression
+        ) != nil
+        return isToken ? key : nil
     }
 
     private func syncArgsToServer() {
@@ -141,6 +160,78 @@ struct ServerDetailView: View {
                 Text("Shown to agents via load_tools so they know which provider to search.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            // Headers (HTTP/SSE only) — e.g. Authorization tokens for remote servers.
+            if server.isHTTP {
+                Section {
+                    if let headers = stagedServer.headers, !headers.isEmpty {
+                        ForEach(headers.keys.sorted(), id: \.self) { key in
+                            HStack {
+                                Text(key)
+                                    .frame(minWidth: 100, alignment: .leading)
+                                let valueBinding = Binding(
+                                    get: { stagedServer.headers?[key] ?? "" },
+                                    set: { newValue in
+                                        stagedServer.headers?[key] = newValue
+                                        hasChanges = true
+                                    }
+                                )
+                                if isSensitiveHeader(key) {
+                                    SecureField("Value", text: valueBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                } else {
+                                    TextField("Value", text: valueBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                }
+                                Button {
+                                    stagedServer.headers?.removeValue(forKey: key)
+                                    if stagedServer.headers?.isEmpty == true {
+                                        stagedServer.headers = nil
+                                    }
+                                    hasChanges = true
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    HStack {
+                        TextField("Key", text: $newHeaderKey)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 100)
+                        if isSensitiveHeader(newHeaderKey.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                            SecureField("Value", text: $newHeaderValue)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            TextField("Value", text: $newHeaderValue)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        Button {
+                            guard let key = normalizedHeaderName(newHeaderKey) else { return }
+                            if stagedServer.headers == nil {
+                                stagedServer.headers = [:]
+                            }
+                            stagedServer.headers?[key] = newHeaderValue
+                            hasChanges = true
+                            newHeaderKey = ""
+                            newHeaderValue = ""
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .foregroundStyle(.green)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(normalizedHeaderName(newHeaderKey) == nil)
+                    }
+                } header: {
+                    Text("Headers")
+                } footer: {
+                    Text("Sent on every request, e.g. Authorization: Bearer <token>.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             // Environment
