@@ -1,19 +1,25 @@
-//! Guardrail proxy library — Milestone 1: transparent passthrough.
+//! Guardrail proxy library — a thin OpenAI-compatible reverse proxy in front of
+//! an OpenAI-compatible backend (LM Studio first).
 //!
-//! A thin OpenAI-compatible reverse proxy in front of an OpenAI-compatible
-//! backend (LM Studio first). At this milestone it does **nothing** but forward
-//! requests and responses verbatim — including streaming — so that behaviour
-//! through the proxy is byte-for-byte identical to talking to the backend
-//! directly. This is the failure-isolation milestone: ship and verify it before
-//! any guardrail logic exists, so that "it didn't work" can never be blamed on
-//! the transport.
+//! Requests without tools, and any streamed request, take the **verbatim
+//! passthrough** path (M1): forwarded byte-for-byte, including the response
+//! stream. Tool-enabled, non-streamed requests additionally take a **log-only
+//! inspection** path (M3): the response is buffered and run through
+//! [`decode`] + [`validate`] so we can confirm the backend's native `tool_calls`
+//! are detected and well-formed — but the original body is still forwarded
+//! unchanged. [`inspect_response`] is the seam where rescue (M4) and the retry
+//! loop (M6) will hook in.
 //!
-//! Guardrails (rescue / validate / retry / synthetic `respond`) land in later
-//! milestones as separate modules gated behind config toggles; until then every
-//! path is pure passthrough. [`build_app`] is the single entrypoint both the
-//! binary and the integration tests use.
+//! Remaining guardrails land as separate modules gated behind config toggles.
+//! [`build_app`] is the single entrypoint both the binary and the integration
+//! tests use.
+//!
+//! [`decode`]: crate::decode
+//! [`validate`]: crate::validate
 
+pub mod decode;
 pub mod model;
+pub mod validate;
 
 use std::net::SocketAddr;
 
@@ -26,7 +32,12 @@ use axum::{
     Router,
 };
 use clap::Parser;
-use tracing::{debug, error, info_span, Instrument};
+use serde_json::Value;
+use tracing::{debug, error, info, info_span, warn, Instrument};
+
+use crate::decode::{decode_response, ModelOutput};
+use crate::model::ChatRequest;
+use crate::validate::{validate, Validation};
 
 /// Headers that are connection-specific and must not be forwarded across a
 /// proxy hop (RFC 9110 §7.6.1). `host` is dropped so reqwest sets it for the
@@ -124,6 +135,13 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
             }
         };
 
+        // Best-effort parse so we can inspect tool-enabled, non-streamed
+        // responses (M3, log-only). Anything that does not parse, has no tools,
+        // or is streamed stays on the verbatim streaming path untouched.
+        let inspect = serde_json::from_slice::<ChatRequest>(&body_bytes)
+            .ok()
+            .filter(|r| r.has_tools() && !r.stream());
+
         let backend_req = state
             .client
             .request(parts.method, &target)
@@ -131,7 +149,10 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
             .body(body_bytes);
 
         match backend_req.send().await {
-            Ok(resp) => relay_response(resp),
+            Ok(resp) => match inspect {
+                Some(request) => relay_buffered_with_inspection(resp, &request).await,
+                None => relay_response(resp),
+            },
             Err(e) => {
                 error!(error = %e, target = %target, "backend request failed");
                 (
@@ -187,6 +208,74 @@ fn relay_response(resp: reqwest::Response) -> Response {
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     response
+}
+
+/// Buffer a tool-enabled, non-streamed response, run log-only guardrail
+/// inspection over it (M3), then forward the original bytes unchanged. Decoding
+/// is best-effort: a non-JSON or undecodable body is forwarded unverified rather
+/// than failing the request.
+async fn relay_buffered_with_inspection(
+    resp: reqwest::Response,
+    request: &ChatRequest,
+) -> Response {
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+    let mut headers = HeaderMap::with_capacity(resp.headers().len());
+    for (name, value) in resp.headers().iter() {
+        if is_hop_by_hop(name) || name == "content-length" {
+            continue;
+        }
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_ref()),
+            HeaderValue::from_bytes(value.as_ref()),
+        ) {
+            headers.append(n, v);
+        }
+    }
+
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            error!(error = %e, "failed to read backend response body");
+            return (StatusCode::BAD_GATEWAY, "failed to read backend response").into_response();
+        }
+    };
+
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(body) => inspect_response(&body, request),
+        Err(e) => warn!(error = %e, "tool-enabled response was not JSON; forwarding unverified"),
+    }
+
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = status;
+    *response.headers_mut() = headers;
+    response
+}
+
+/// Decode and validate the backend response, logging the outcome. This is the
+/// log-only seam where rescue (M4) and the retry loop (M6) will hook in; for now
+/// it only observes and never alters the response.
+fn inspect_response(body: &Value, request: &ChatRequest) {
+    match decode_response(body) {
+        ModelOutput::ToolCalls(calls) => {
+            let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+            info!(count = calls.len(), tool_calls = ?names, "decoded native tool_calls");
+            match validate(&calls, &request.tool_names()) {
+                Validation::Valid => info!("tool calls valid"),
+                Validation::NeedsRetry(nudge) => {
+                    warn!(%nudge, "tool calls invalid (log-only; retry lands in a later milestone)")
+                }
+            }
+        }
+        ModelOutput::Text(text) => {
+            // In M4 this Text becomes the input to rescue parsing.
+            debug!(
+                len = text.len(),
+                "model returned text, no native tool_calls"
+            )
+        }
+    }
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
