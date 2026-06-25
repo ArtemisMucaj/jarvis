@@ -24,20 +24,23 @@ coupled.
 
 Requests without tools (and any streamed request) are forwarded **verbatim**,
 byte-for-byte, including the response stream — the `model` field is never
-rewritten. Tool-enabled, non-streamed responses additionally run through
-**log-only** decode → rescue → validate so we can confirm detection without
-changing behaviour yet. Re-emit/retry land in M6.
+rewritten. Tool-enabled, non-streamed requests run the **active guardrail loop**:
+inject `respond`, call the backend, decode → rescue → validate, retry with a
+nudge on failure, unwrap `respond` to text. Native valid calls pass through
+unchanged; only repaired responses are rewritten. Every guardrail is on by
+default and individually toggleable (`--rescue/--respond/--retry false`), so the
+proxy degrades to a zero-overhead passthrough.
 
-Milestones (each toggle-off-able so the proxy can degrade to a zero-overhead
-passthrough):
+Milestones:
 
 1. ✅ Transparent passthrough (failure-isolation).
 2. ✅ Typed+passthrough serde model — round-trip fidelity.
-3. ✅ Validation + canonical re-emit (log-only).
+3. ✅ Validation + canonical re-emit.
 4. ✅ Rescue parsing — Mistral, Qwen, Hermes, Llama, fenced JSON, bare JSON.
-5. Synthetic `respond` tool + strip-to-text.
-6. Retry loop + ErrorTracker with fallback-to-last-text.
-7. Observability + per-guardrail config toggles.
+5. ✅ Synthetic `respond` tool + strip-to-text.
+6. ✅ Retry loop + ErrorTracker with fallback-to-last-text.
+7. ✅ Per-guardrail config toggles (observability tracing throughout).
+8. _(deferred)_ optimistic streaming; more backends; Anthropic wire format.
 
 ## Run
 
@@ -48,7 +51,9 @@ cargo run --manifest-path rust/Cargo.toml -p guardrail -- \
 ```
 
 Config is also available via env: `GUARDRAIL_LISTEN`, `GUARDRAIL_BACKEND`,
-`GUARDRAIL_TIMEOUT_SECS`. Logging via `RUST_LOG` (default `guardrail=info,warn`).
+`GUARDRAIL_CONNECT_TIMEOUT_SECS`, `GUARDRAIL_READ_TIMEOUT_SECS`, and the guardrail
+toggles `GUARDRAIL_RESCUE`, `GUARDRAIL_RESPOND`, `GUARDRAIL_RETRY`,
+`GUARDRAIL_MAX_RETRIES`. Logging via `RUST_LOG` (default `guardrail=info,warn`).
 
 Point your OpenAI-compatible client's base URL at `http://127.0.0.1:8080/v1`.
 

@@ -1,25 +1,31 @@
 //! Guardrail proxy library — a thin OpenAI-compatible reverse proxy in front of
 //! an OpenAI-compatible backend (LM Studio first).
 //!
-//! Requests without tools, and any streamed request, take the **verbatim
-//! passthrough** path (M1): forwarded byte-for-byte, including the response
-//! stream. Tool-enabled, non-streamed requests additionally take a **log-only
-//! inspection** path (M3): the response is buffered and run through
-//! [`decode`] + [`validate`] so we can confirm the backend's native `tool_calls`
-//! are detected and well-formed — but the original body is still forwarded
-//! unchanged. [`inspect_response`] is the seam where rescue (M4) and the retry
-//! loop (M6) will hook in.
+//! Two paths:
 //!
-//! Remaining guardrails land as separate modules gated behind config toggles.
+//! - **Verbatim passthrough** — requests without tools and any streamed request
+//!   are forwarded byte-for-byte, including the response stream.
+//! - **Guardrail loop** ([`guardrail_loop`]) — tool-enabled, non-streamed
+//!   requests run through the active guardrails (each toggleable, all on by
+//!   default): inject the synthetic `respond` tool, call the backend
+//!   non-streamed, [`decode`] the response, [`rescue`] tool calls from text when
+//!   needed, [`validate`] against the declared tools, retry with a corrective
+//!   nudge on failure, and unwrap `respond` to plain text. Native, valid calls
+//!   are forwarded unchanged; only repaired responses are rewritten. When every
+//!   toggle is off the path degrades to a single passthrough call.
+//!
 //! [`build_app`] is the single entrypoint both the binary and the integration
 //! tests use.
 //!
 //! [`decode`]: crate::decode
+//! [`rescue`]: crate::rescue
 //! [`validate`]: crate::validate
 
 pub mod decode;
 pub mod model;
 pub mod rescue;
+pub mod respond;
+pub mod retry;
 pub mod validate;
 
 use std::net::SocketAddr;
@@ -38,6 +44,7 @@ use tracing::{debug, error, info, info_span, warn, Instrument};
 
 use crate::decode::{decode_response, ModelOutput};
 use crate::model::ChatRequest;
+use crate::retry::ErrorTracker;
 use crate::validate::{validate, Validation};
 
 /// Headers that are connection-specific and must not be forwarded across a
@@ -222,12 +229,33 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
             }
         };
 
-        // Best-effort parse so we can inspect tool-enabled, non-streamed
-        // responses (M3, log-only). Anything that does not parse, has no tools,
-        // or is streamed stays on the verbatim streaming path untouched.
-        let inspect = serde_json::from_slice::<ChatRequest>(&body_bytes)
+        // Best-effort parse: only a tool-enabled, non-streamed chat-completions
+        // request is a candidate for guardrails. Everything else (no tools,
+        // streamed, or unparseable) stays on the verbatim streaming path.
+        let guarded = serde_json::from_slice::<ChatRequest>(&body_bytes)
             .ok()
             .filter(|r| r.has_tools() && !r.stream());
+
+        if let Some(request) = guarded {
+            // Active guardrails: run the loop (inject respond, decode, rescue,
+            // validate, retry). When all toggles are off, fall through to a
+            // single call with log-only inspection.
+            if state.guardrails.any_active() {
+                return guardrail_loop(&state, &target, &parts.headers, request).await;
+            }
+            return match post_backend(&state, &target, &parts.headers, body_bytes.to_vec()).await {
+                Ok((status, headers, bytes)) => {
+                    match serde_json::from_slice::<Value>(&bytes) {
+                        Ok(body) => inspect_response(&body, &request, state.guardrails),
+                        Err(e) => {
+                            warn!(error = %e, "tool-enabled response was not JSON; forwarding unverified")
+                        }
+                    }
+                    bytes_response(status, headers, bytes)
+                }
+                Err(resp) => resp,
+            };
+        }
 
         let backend_req = state
             .client
@@ -236,12 +264,7 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
             .body(body_bytes);
 
         match backend_req.send().await {
-            Ok(resp) => match inspect {
-                Some(request) => {
-                    relay_buffered_with_inspection(resp, &request, state.guardrails).await
-                }
-                None => relay_response(resp),
-            },
+            Ok(resp) => relay_response(resp),
             Err(e) => {
                 error!(error = %e, target = %target, "backend request failed");
                 (
@@ -254,6 +277,179 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
     }
     .instrument(span)
     .await
+}
+
+/// The active guardrail loop (M5 + M6). Injects the synthetic `respond` tool
+/// (when enabled), then repeatedly calls the backend non-streamed, decoding and
+/// validating each response:
+///
+/// - a `respond` call → strip to a plain text message and return;
+/// - valid tool calls → return (native calls forwarded unchanged; rescued calls
+///   re-emitted canonically);
+/// - invalid calls → append a corrective nudge and retry, up to the budget;
+/// - on exhaustion → fall back to the model's last text (or last response).
+async fn guardrail_loop(
+    state: &AppState,
+    target: &str,
+    headers: &HeaderMap,
+    mut request: ChatRequest,
+) -> Response {
+    let g = state.guardrails;
+    if g.respond {
+        request.push_tool(respond::respond_tool());
+    }
+    // Names valid for this loop, fixed across retries (respond included above).
+    let valid_names: Vec<String> = request.tool_names().iter().map(|s| s.to_string()).collect();
+
+    let mut tracker = ErrorTracker::new(if g.retry { g.max_retries } else { 0 });
+    // Most recent textual answer, for fallback-to-last-text on exhaustion.
+    let mut last_text: Option<String> = None;
+
+    loop {
+        let body = match serde_json::to_vec(&request) {
+            Ok(b) => b,
+            Err(e) => {
+                error!(error = %e, "failed to serialize guardrail request");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        };
+
+        let (status, out_headers, bytes) = match post_backend(state, target, headers, body).await {
+            Ok(parts) => parts,
+            Err(resp) => return resp,
+        };
+
+        // Non-JSON backend output can't be guarded; forward as-is.
+        let value: Value = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "backend response was not JSON; forwarding unverified");
+                return bytes_response(status, out_headers, bytes);
+            }
+        };
+
+        let names: Vec<&str> = valid_names.iter().map(String::as_str).collect();
+        let calls = match decode_response(&value) {
+            ModelOutput::ToolCalls(calls) => Some((calls, false)),
+            ModelOutput::Text(text) => {
+                last_text = Some(text.clone());
+                match g.rescue.then(|| rescue::rescue(&text)).flatten() {
+                    Some((parser, calls)) => {
+                        info!(parser, count = calls.len(), "rescued tool calls from text");
+                        Some((calls, true))
+                    }
+                    // Genuine text answer (model ignored respond, or rescue off):
+                    // pass the original response through unchanged.
+                    None => None,
+                }
+            }
+        };
+
+        let Some((calls, rescued)) = calls else {
+            return bytes_response(status, out_headers, bytes);
+        };
+
+        // M5: a respond call unwraps to a plain text message.
+        if g.respond {
+            if let Some(r) = calls.iter().find(|c| respond::is_respond(c)) {
+                let text = respond::message_text(r);
+                return json_response(
+                    status,
+                    out_headers,
+                    &decode::response_with_text(&value, &text),
+                );
+            }
+        }
+
+        match validate(&calls, &names) {
+            Validation::Valid => {
+                // Native + unchanged → forward verbatim; rescued → re-emit canonical.
+                return if rescued {
+                    json_response(
+                        status,
+                        out_headers,
+                        &decode::response_with_tool_calls(&value, &calls),
+                    )
+                } else {
+                    bytes_response(status, out_headers, bytes)
+                };
+            }
+            Validation::NeedsRetry(nudge) => {
+                if g.retry && tracker.can_retry() {
+                    tracker.record_retry();
+                    warn!(attempt = tracker.attempts(), %nudge, "tool call invalid; retrying");
+                    request.messages.push(retry::nudge_message(&nudge));
+                    continue;
+                }
+                warn!("tool call invalid and retries exhausted; falling back");
+                return match &last_text {
+                    Some(text) => json_response(
+                        status,
+                        out_headers,
+                        &decode::response_with_text(&value, text),
+                    ),
+                    None => json_response(status, out_headers, &value),
+                };
+            }
+        }
+    }
+}
+
+/// POST a body to the backend and return the status, filtered response headers,
+/// and the fully-buffered body. Errors are mapped to a client-facing response.
+async fn post_backend(
+    state: &AppState,
+    target: &str,
+    headers: &HeaderMap,
+    body: Vec<u8>,
+) -> Result<(StatusCode, HeaderMap, Vec<u8>), Response> {
+    let resp = state
+        .client
+        .post(target)
+        .headers(forward_headers(headers))
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| {
+            error!(error = %e, target = %target, "backend request failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("backend request failed: {e}"),
+            )
+                .into_response()
+        })?;
+
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let out_headers = copy_response_headers(resp.headers());
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| {
+            error!(error = %e, "failed to read backend response body");
+            (StatusCode::BAD_GATEWAY, "failed to read backend response").into_response()
+        })?
+        .to_vec();
+    Ok((status, out_headers, bytes))
+}
+
+/// Build a response from already-buffered bytes, preserving status and headers.
+fn bytes_response(status: StatusCode, headers: HeaderMap, bytes: Vec<u8>) -> Response {
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = status;
+    *response.headers_mut() = headers;
+    response
+}
+
+/// Build a response from a JSON value the guardrail loop produced.
+fn json_response(status: StatusCode, headers: HeaderMap, value: &Value) -> Response {
+    match serde_json::to_vec(value) {
+        Ok(bytes) => bytes_response(status, headers, bytes),
+        Err(e) => {
+            error!(error = %e, "failed to serialize guardrail response");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
+    }
 }
 
 /// Copy client → backend headers, dropping hop-by-hop headers (both the static
@@ -276,47 +472,22 @@ fn forward_headers(src: &HeaderMap) -> HeaderMap {
 fn relay_response(resp: reqwest::Response) -> Response {
     let status =
         StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let headers = copy_response_headers(resp.headers());
 
-    let connection = connection_header_names(resp.headers());
-    let mut headers = HeaderMap::with_capacity(resp.headers().len());
-    for (name, value) in resp.headers().iter() {
-        // Drop hop-by-hop (static + Connection-named) and length/framing headers:
-        // we re-stream the body and let the HTTP server set framing.
-        // content-length on a streamed body would risk a mismatch.
-        if should_strip_header(name, &connection) || name == "content-length" {
-            continue;
-        }
-        if let (Ok(n), Ok(v)) = (
-            HeaderName::from_bytes(name.as_ref()),
-            HeaderValue::from_bytes(value.as_ref()),
-        ) {
-            headers.append(n, v);
-        }
-    }
-
-    let body = Body::from_stream(resp.bytes_stream());
-
-    let mut response = Response::new(body);
+    let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     response
 }
 
-/// Buffer a tool-enabled, non-streamed response, run log-only guardrail
-/// inspection over it (M3), then forward the original bytes unchanged. Decoding
-/// is best-effort: a non-JSON or undecodable body is forwarded unverified rather
-/// than failing the request.
-async fn relay_buffered_with_inspection(
-    resp: reqwest::Response,
-    request: &ChatRequest,
-    guardrails: Guardrails,
-) -> Response {
-    let status =
-        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-
-    let connection = connection_header_names(resp.headers());
-    let mut headers = HeaderMap::with_capacity(resp.headers().len());
-    for (name, value) in resp.headers().iter() {
+/// Copy backend → client response headers, dropping hop-by-hop (static +
+/// Connection-named) and length/framing headers. We re-stream or re-buffer the
+/// body and let the HTTP server set framing; a stale `content-length` would risk
+/// a mismatch.
+fn copy_response_headers(src: &HeaderMap) -> HeaderMap {
+    let connection = connection_header_names(src);
+    let mut headers = HeaderMap::with_capacity(src.len());
+    for (name, value) in src.iter() {
         if should_strip_header(name, &connection) || name == "content-length" {
             continue;
         }
@@ -327,24 +498,7 @@ async fn relay_buffered_with_inspection(
             headers.append(n, v);
         }
     }
-
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            error!(error = %e, "failed to read backend response body");
-            return (StatusCode::BAD_GATEWAY, "failed to read backend response").into_response();
-        }
-    };
-
-    match serde_json::from_slice::<Value>(&bytes) {
-        Ok(body) => inspect_response(&body, request, guardrails),
-        Err(e) => warn!(error = %e, "tool-enabled response was not JSON; forwarding unverified"),
-    }
-
-    let mut response = Response::new(Body::from(bytes));
-    *response.status_mut() = status;
-    *response.headers_mut() = headers;
-    response
+    headers
 }
 
 /// Decode and validate the backend response, logging the outcome. This is the

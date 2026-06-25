@@ -109,6 +109,54 @@ pub fn canonical_tool_calls(calls: &[ToolCall]) -> Value {
     )
 }
 
+/// Rebuild a response with canonical `tool_calls`, reusing `template` so id,
+/// model, usage, etc. are preserved. Used by the guardrail loop to re-emit
+/// rescued or repaired calls.
+pub fn response_with_tool_calls(template: &Value, calls: &[ToolCall]) -> Value {
+    let mut out = template.clone();
+    set_first_choice_message(
+        &mut out,
+        json!({
+            "role": "assistant",
+            "content": Value::Null,
+            "tool_calls": canonical_tool_calls(calls),
+        }),
+        "tool_calls",
+    );
+    out
+}
+
+/// Rebuild a response carrying a plain assistant text message (used to unwrap a
+/// `respond` call and for fallback-to-last-text on retry exhaustion).
+pub fn response_with_text(template: &Value, text: &str) -> Value {
+    let mut out = template.clone();
+    set_first_choice_message(
+        &mut out,
+        json!({ "role": "assistant", "content": text }),
+        "stop",
+    );
+    out
+}
+
+/// Replace the first choice's `message` and `finish_reason`, synthesising the
+/// `choices` array if the template lacks one.
+fn set_first_choice_message(resp: &mut Value, message: Value, finish_reason: &str) {
+    let choice = resp
+        .get_mut("choices")
+        .and_then(Value::as_array_mut)
+        .and_then(|a| a.get_mut(0));
+    match choice {
+        Some(c) => {
+            c["message"] = message;
+            c["finish_reason"] = json!(finish_reason);
+        }
+        None => {
+            resp["choices"] =
+                json!([{ "index": 0, "message": message, "finish_reason": finish_reason }]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +253,43 @@ mod tests {
         let canonical = canonical_tool_calls(&calls);
         assert_eq!(canonical[0]["id"], json!("call_0"));
         assert_eq!(canonical[0]["type"], json!("function"));
+    }
+
+    #[test]
+    fn response_with_tool_calls_preserves_template_fields() {
+        let template = json!({
+            "id": "chatcmpl-7",
+            "model": "local-model",
+            "usage": {"total_tokens": 9},
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "junk"}}]
+        });
+        let calls = vec![ToolCall {
+            id: Some("call_1".into()),
+            name: "f".into(),
+            arguments: "{\"a\":1}".into(),
+        }];
+        let out = response_with_tool_calls(&template, &calls);
+
+        // Top-level metadata preserved.
+        assert_eq!(out["id"], "chatcmpl-7");
+        assert_eq!(out["model"], "local-model");
+        assert_eq!(out["usage"]["total_tokens"], 9);
+        // Message replaced with canonical tool calls.
+        assert_eq!(out["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(
+            out["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "f"
+        );
+        assert_eq!(out["choices"][0]["message"]["content"], Value::Null);
+    }
+
+    #[test]
+    fn response_with_text_sets_assistant_message() {
+        let template = json!({"id": "x", "choices": [{"index": 0, "message": {}}]});
+        let out = response_with_text(&template, "hello there");
+        assert_eq!(out["id"], "x");
+        assert_eq!(out["choices"][0]["message"]["role"], "assistant");
+        assert_eq!(out["choices"][0]["message"]["content"], "hello there");
+        assert_eq!(out["choices"][0]["finish_reason"], "stop");
     }
 }

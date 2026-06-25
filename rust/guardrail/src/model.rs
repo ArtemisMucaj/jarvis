@@ -67,6 +67,11 @@ impl ChatRequest {
         self.tools.as_ref().is_some_and(|t| !t.is_empty())
     }
 
+    /// Append a tool definition (used to inject the synthetic `respond` tool).
+    pub fn push_tool(&mut self, tool: Tool) {
+        self.tools.get_or_insert_with(Vec::new).push(tool);
+    }
+
     /// The set of tool names the model is allowed to call, in declaration order.
     /// This is the one piece of the tool definitions the validate guardrail
     /// actually reads.

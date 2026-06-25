@@ -90,9 +90,12 @@ OpenAI-compatible backend (LM Studio), applying small-model tool-call guardrails
 in the wire path. It is a **separate process at a different layer** from the MCP
 proxy — jarvis sits on the tool-discovery (MCP) edge, guardrail on the inference
 (OpenAI HTTP) edge — and they do not call each other at runtime. They co-ship as
-one product: the menu bar app launches and supervises both. Currently at
-**Milestone 1 (transparent passthrough)**; guardrail logic lands in later
-milestones, each toggle-off-able. See `rust/guardrail/README.md`.
+one product: the menu bar app launches and supervises both. The guardrail loop
+(rescue → validate → retry, synthetic `respond`, strip-to-text) is implemented
+and on by default; each guardrail is individually toggleable
+(`--rescue/--respond/--retry`), so the proxy degrades to a transparent
+passthrough. Streaming and non-OpenAI wire formats remain deferred. See
+`rust/guardrail/README.md`.
 
 ## CI
 
