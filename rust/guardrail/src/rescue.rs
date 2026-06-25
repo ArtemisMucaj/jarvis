@@ -6,21 +6,25 @@
 //! parsers to recover structured [`ToolCall`]s from that text. Each parser
 //! targets one model family's malformed output and is independently unit-tested.
 //!
-//! The families covered mirror those handled by forge (for an OpenAI-edge proxy;
-//! Anthropic's wire format is out of scope here):
+//! The families covered are forge's rescue formats plus the native delimiters of
+//! the families a transparent proxy actually sees (Anthropic's wire format is
+//! out of scope here):
 //!
 //! | Parser | Format |
 //! |---|---|
 //! | [`Mistral`] | `[TOOL_CALLS][{...}]` or `[TOOL_CALLS]name{args}` |
+//! | [`Rehearsal`] | `name[ARGS]{...}` (reasoning models) |
+//! | [`QwenCoder`] | `<function=name><parameter=k>v</parameter></function>` |
 //! | [`Qwen`] | `<tool_call>{...}</tool_call>` |
 //! | [`Hermes`] | `<function_call>{...}</function_call>` |
 //! | [`Llama`] | `<|python_tag|>{...}` |
 //! | [`FencedJson`] | a ```json fenced code block |
 //! | [`BareJson`] | the whole text is a tool-call JSON value |
 //!
-//! All parsers funnel through [`tool_calls_from_value`], which interprets the
-//! common JSON shapes (`{name, arguments}`, `{name, parameters}`, OpenAI's
-//! `{type, function:{...}}`, arrays, and `{tool_calls:[...]}` wrappers).
+//! All JSON-shaped parsers funnel through [`tool_calls_from_value`], which
+//! interprets the common shapes: forge's `{tool, args}`, `{name, arguments}`,
+//! `{name, parameters}`, OpenAI's `{type, function:{...}}`, arrays, and
+//! `{tool_calls:[...]}` wrappers.
 //!
 //! [`decode`]: crate::decode::decode_response
 //! [`ModelOutput::Text`]: crate::decode::ModelOutput::Text
@@ -44,6 +48,8 @@ pub trait RescueParser: Send + Sync {
 pub fn default_parsers() -> Vec<Box<dyn RescueParser>> {
     vec![
         Box::new(Mistral),
+        Box::new(Rehearsal),
+        Box::new(QwenCoder),
         Box::new(Qwen),
         Box::new(Hermes),
         Box::new(Llama),
@@ -84,17 +90,21 @@ fn tool_calls_from_value(v: &Value) -> Option<Vec<ToolCall>> {
 }
 
 /// Interpret a single JSON object as one tool call. Accepts the OpenAI
-/// `{type, function:{name, arguments}}` shape and the flatter `{name,
-/// arguments|parameters}` shape. `arguments` is normalised to a JSON-encoded
-/// string for lossless re-emit.
+/// `{type, function:{name, arguments}}` shape, the flatter `{name,
+/// arguments|parameters}` shape, and forge's `{tool, args}` shape (the format
+/// forge's prompt injection elicits). `arguments` is normalised to a
+/// JSON-encoded string for lossless re-emit.
 fn tool_call_from_value(v: &Value) -> Option<ToolCall> {
     let obj = v.as_object()?;
 
     let (name, args) = match obj.get("function").and_then(Value::as_object) {
         Some(func) => (func.get("name"), func.get("arguments")),
         None => (
-            obj.get("name"),
-            obj.get("arguments").or_else(|| obj.get("parameters")),
+            // forge accepts `tool` or `name`, and `args` or `arguments`.
+            obj.get("name").or_else(|| obj.get("tool")),
+            obj.get("arguments")
+                .or_else(|| obj.get("args"))
+                .or_else(|| obj.get("parameters")),
         ),
     };
 
@@ -192,6 +202,96 @@ impl RescueParser for Mistral {
             arguments: args.to_string(),
         }])
     }
+}
+
+/// Rehearsal syntax used by some reasoning models: `name[ARGS]{...}`.
+/// Mirrors forge's `(\w+)\[ARGS\](\{.*\})`.
+pub struct Rehearsal;
+const ARGS_MARKER: &str = "[ARGS]";
+impl RescueParser for Rehearsal {
+    fn name(&self) -> &'static str {
+        "rehearsal"
+    }
+    fn try_parse(&self, text: &str) -> Option<Vec<ToolCall>> {
+        let marker = text.find(ARGS_MARKER)?;
+        // Name is the identifier immediately preceding `[ARGS]`.
+        let name: String = text[..marker]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if name.is_empty() {
+            return None;
+        }
+        let args = first_json_value(text[marker + ARGS_MARKER.len()..].trim_start())?;
+        if !args.is_object() {
+            return None;
+        }
+        Some(vec![ToolCall {
+            id: None,
+            name,
+            arguments: args.to_string(),
+        }])
+    }
+}
+
+/// Qwen-Coder XML: `<function=name><parameter=key>value</parameter>...</function>`.
+/// Parameter values are coerced to JSON scalars/objects when they parse, else
+/// kept as strings. Mirrors forge's `_QWEN_FUNCTION_RE` / `_QWEN_PARAMETER_RE`.
+pub struct QwenCoder;
+impl RescueParser for QwenCoder {
+    fn name(&self) -> &'static str {
+        "qwen_coder"
+    }
+    fn try_parse(&self, text: &str) -> Option<Vec<ToolCall>> {
+        let mut calls = Vec::new();
+        for (name, inner) in extract_function_blocks(text) {
+            let mut args = serde_json::Map::new();
+            // Split on the opening of each `<parameter=`; the first chunk is the
+            // text before any parameter and is skipped.
+            for chunk in inner.split("<parameter=").skip(1) {
+                if let Some((key, rest)) = chunk.split_once('>') {
+                    let value = rest.split("</parameter>").next().unwrap_or(rest).trim();
+                    args.insert(key.trim().to_string(), coerce_param(value));
+                }
+            }
+            calls.push(ToolCall {
+                id: None,
+                name,
+                arguments: Value::Object(args).to_string(),
+            });
+        }
+        (!calls.is_empty()).then_some(calls)
+    }
+}
+
+/// Collect `(name, inner)` for each `<function=name>...</function>` block.
+fn extract_function_blocks(text: &str) -> Vec<(String, String)> {
+    const OPEN: &str = "<function=";
+    const CLOSE: &str = "</function>";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        let after = &rest[start + OPEN.len()..];
+        let Some(gt) = after.find('>') else { break };
+        let name = after[..gt].trim().to_string();
+        let body = &after[gt + 1..];
+        let Some(end) = body.find(CLOSE) else { break };
+        if !name.is_empty() {
+            out.push((name, body[..end].to_string()));
+        }
+        rest = &body[end + CLOSE.len()..];
+    }
+    out
+}
+
+/// Coerce a Qwen-Coder parameter value to JSON: a parseable scalar/object stays
+/// typed, anything else becomes a string.
+fn coerce_param(value: &str) -> Value {
+    serde_json::from_str::<Value>(value).unwrap_or_else(|_| Value::String(value.to_string()))
 }
 
 /// Qwen: one or more `<tool_call>{...}</tool_call>` blocks.
@@ -354,6 +454,47 @@ mod tests {
         let text = "{\"type\": \"function\", \"function\": {\"name\": \"f\", \"arguments\": \"{\\\"a\\\":1}\"}}";
         let calls = BareJson.try_parse(text).unwrap();
         assert_eq!(one(&calls), ("f", "{\"a\":1}"));
+    }
+
+    #[test]
+    fn bare_json_forge_tool_args_shape() {
+        // forge's prompt-injected shape: {"tool": ..., "args": ...}.
+        let calls = BareJson
+            .try_parse("{\"tool\": \"get_weather\", \"args\": {\"city\": \"Paris\"}}")
+            .unwrap();
+        assert_eq!(one(&calls), ("get_weather", "{\"city\":\"Paris\"}"));
+    }
+
+    #[test]
+    fn rehearsal_name_args_marker() {
+        let calls = Rehearsal
+            .try_parse("thinking... get_weather[ARGS]{\"city\": \"Paris\"}")
+            .unwrap();
+        assert_eq!(one(&calls), ("get_weather", "{\"city\":\"Paris\"}"));
+    }
+
+    #[test]
+    fn qwen_coder_function_parameter_xml() {
+        let text = "<function=get_weather><parameter=city>Paris</parameter><parameter=days>3</parameter></function>";
+        let calls = QwenCoder.try_parse(text).unwrap();
+        assert_eq!(calls[0].name, "get_weather");
+        // String value stays a string; numeric value is coerced.
+        assert_eq!(calls[0].arguments, "{\"city\":\"Paris\",\"days\":3}");
+    }
+
+    #[test]
+    fn qwen_coder_parameter_without_closing_tag() {
+        // Last parameter need not close before </function>.
+        let text = "<function=f><parameter=x>hello</function>";
+        let calls = QwenCoder.try_parse(text).unwrap();
+        assert_eq!(calls[0].arguments, "{\"x\":\"hello\"}");
+    }
+
+    #[test]
+    fn rescue_prefers_qwen_coder_over_bare_json() {
+        let (parser, _) =
+            rescue("<function=get_weather><parameter=city>Paris</parameter></function>").unwrap();
+        assert_eq!(parser, "qwen_coder");
     }
 
     #[test]

@@ -36,7 +36,9 @@ Milestones:
 1. ✅ Transparent passthrough (failure-isolation).
 2. ✅ Typed+passthrough serde model — round-trip fidelity.
 3. ✅ Validation + canonical re-emit.
-4. ✅ Rescue parsing — Mistral, Qwen, Hermes, Llama, fenced JSON, bare JSON.
+4. ✅ Rescue parsing — Mistral, rehearsal (`name[ARGS]{}`), Qwen-Coder
+   (`<function=…><parameter=…>`), Qwen `<tool_call>`, Hermes, Llama, fenced JSON,
+   and `{tool,args}`/`{name,arguments}` JSON (forge's full set + native formats).
 5. ✅ Synthetic `respond` tool + strip-to-text.
 6. ✅ Retry loop + ErrorTracker with fallback-to-last-text.
 7. ✅ Per-guardrail config toggles (observability tracing throughout).

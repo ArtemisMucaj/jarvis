@@ -2,10 +2,15 @@
 //!
 //! When a tool call fails validation, the guardrail loop appends a corrective
 //! nudge and asks the backend again, up to a budget. [`ErrorTracker`] holds that
-//! budget; the nudge is delivered as a plain `user` message — universal across
-//! backends and, unlike a `tool` message, needing no dangling `tool_call_id`.
+//! budget. The nudge is delivered on the **canonical tool channel** (matching
+//! forge): the model's tool call is echoed as an `assistant` message and the
+//! correction comes back as a `tool` message per call — the channel the model
+//! was pretrained on, which survives heavy-context attention drop-off better
+//! than a trailing `user` message.
 
 use serde_json::{json, Value};
+
+use crate::decode::{canonical_tool_calls, ToolCall};
 
 /// Tracks how many corrective retries remain in a single guardrail loop.
 #[derive(Debug)]
@@ -38,9 +43,27 @@ impl ErrorTracker {
     }
 }
 
-/// Build the corrective nudge as a `user` message to append to the conversation.
-pub fn nudge_message(nudge: &str) -> Value {
-    json!({ "role": "user", "content": nudge })
+/// Build the follow-up messages to append after a failed tool call: the
+/// `assistant` message echoing the (canonical) tool calls, then one `tool`
+/// message per call carrying the corrective nudge. Every tool call is answered
+/// so the next request is schema-valid.
+pub fn tool_error_followup(calls: &[ToolCall], nudge: &str) -> Vec<Value> {
+    let canonical = canonical_tool_calls(calls);
+    let mut messages = vec![json!({
+        "role": "assistant",
+        "content": Value::Null,
+        "tool_calls": canonical.clone(),
+    })];
+    if let Some(array) = canonical.as_array() {
+        for call in array {
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call.get("id").cloned().unwrap_or(Value::Null),
+                "content": nudge,
+            }));
+        }
+    }
+    messages
 }
 
 #[cfg(test)]
@@ -65,9 +88,30 @@ mod tests {
     }
 
     #[test]
-    fn nudge_is_a_user_message() {
-        let m = nudge_message("try again");
-        assert_eq!(m["role"], "user");
-        assert_eq!(m["content"], "try again");
+    fn followup_echoes_calls_and_answers_each_on_tool_channel() {
+        let calls = vec![
+            ToolCall {
+                id: Some("call_x".into()),
+                name: "a".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: None,
+                name: "b".into(),
+                arguments: "{}".into(),
+            },
+        ];
+        let msgs = tool_error_followup(&calls, "fix it");
+
+        // assistant echo + one tool message per call.
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["tool_calls"].as_array().unwrap().len(), 2);
+
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call_x");
+        assert_eq!(msgs[1]["content"], "fix it");
+        // Minted id for the call that lacked one.
+        assert_eq!(msgs[2]["tool_call_id"], "call_1");
     }
 }

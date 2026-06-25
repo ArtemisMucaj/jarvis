@@ -378,7 +378,10 @@ async fn guardrail_loop(
                 if g.retry && tracker.can_retry() {
                     tracker.record_retry();
                     warn!(attempt = tracker.attempts(), %nudge, "tool call invalid; retrying");
-                    request.messages.push(retry::nudge_message(&nudge));
+                    // Echo the call + correct it on the canonical tool channel.
+                    request
+                        .messages
+                        .extend(retry::tool_error_followup(&calls, &nudge));
                     continue;
                 }
                 warn!("tool call invalid and retries exhausted; falling back");
