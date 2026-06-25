@@ -82,24 +82,23 @@ async fn request_body_is_forwarded_verbatim() {
 
     let proxy = spawn_proxy(&backend.uri()).await;
 
-    let body = serde_json::json!({
-        "model": "some/exact-model-id",
-        "messages": [{"role": "user", "content": "hello"}],
-        "temperature": 0.7
-    });
+    // Raw bytes (specific whitespace + key order) so the assertion proves
+    // byte-for-byte forwarding, not just semantic JSON equality.
+    let body = br#"{"model":"some/exact-model-id","messages":[{"role":"user","content":"hello"}],"temperature":0.7}"#;
 
-    let echoed: serde_json::Value = reqwest::Client::new()
+    let echoed = reqwest::Client::new()
         .post(format!("{proxy}/v1/chat/completions"))
-        .json(&body)
+        .header("content-type", "application/json")
+        .body(body.to_vec())
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
 
-    // Model id and arbitrary sampling params round-trip untouched.
-    assert_eq!(echoed, body);
+    // Request bytes (model id, sampling params, exact formatting) round-trip untouched.
+    assert_eq!(echoed.as_ref(), body.as_slice());
 }
 
 #[tokio::test]

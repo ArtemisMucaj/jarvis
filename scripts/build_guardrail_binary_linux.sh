@@ -15,7 +15,7 @@ OUT_DIR="$REPO_ROOT/dist"
 echo "==> Building guardrail binary with cargo (release, Linux)..."
 
 mkdir -p "$OUT_DIR"
-cargo build --release --manifest-path "$RUST_DIR/Cargo.toml" -p guardrail
+cargo build --locked --release --manifest-path "$RUST_DIR/Cargo.toml" -p guardrail
 
 cp "$RUST_DIR/target/release/guardrail" "$OUT_DIR/guardrail"
 

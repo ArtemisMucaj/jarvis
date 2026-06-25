@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{header::CONNECTION, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
     Router,
@@ -55,6 +55,11 @@ const HOP_BY_HOP: &[&str] = &[
     "host",
 ];
 
+/// Upper bound on a request body we will buffer before forwarding. Chat-
+/// completions payloads are small; this caps memory so a client cannot force the
+/// proxy to read an unbounded body. Exceeding it yields `413 Payload Too Large`.
+const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
+
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "guardrail",
@@ -74,9 +79,16 @@ pub struct Config {
     )]
     pub backend: String,
 
-    /// Per-request timeout to the backend, in seconds.
-    #[arg(long, env = "GUARDRAIL_TIMEOUT_SECS", default_value_t = 600)]
-    pub timeout_secs: u64,
+    /// Timeout for establishing the TCP/TLS connection to the backend, in
+    /// seconds. Does not bound the response — streams may run indefinitely.
+    #[arg(long, env = "GUARDRAIL_CONNECT_TIMEOUT_SECS", default_value_t = 10)]
+    pub connect_timeout_secs: u64,
+
+    /// Maximum idle gap between read chunks of the backend response, in seconds.
+    /// Resets on every chunk, so a steadily-streaming SSE response is never cut
+    /// off; only a stalled backend trips it.
+    #[arg(long, env = "GUARDRAIL_READ_TIMEOUT_SECS", default_value_t = 300)]
+    pub read_timeout_secs: u64,
 }
 
 #[derive(Clone)]
@@ -127,11 +139,14 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
         // Buffer the request body. Chat-completions requests are small; this
         // keeps the hop simple and is the same buffering the guardrail loop will
         // need later anyway (it must see the whole response before validating).
-        let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        let body_bytes = match axum::body::to_bytes(body, MAX_REQUEST_BODY).await {
             Ok(b) => b,
             Err(e) => {
-                error!(error = %e, "failed to read request body");
-                return (StatusCode::BAD_REQUEST, "failed to read request body").into_response();
+                // to_bytes fails when the body exceeds the cap or the stream
+                // errors; both are client-side, surfaced as 413 to be explicit
+                // about the bound.
+                error!(error = %e, "failed to read request body (or exceeded cap)");
+                return (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response();
             }
         };
 
@@ -167,11 +182,13 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
     .await
 }
 
-/// Copy client → backend headers, dropping hop-by-hop headers.
+/// Copy client → backend headers, dropping hop-by-hop headers (both the static
+/// set and any header named in this message's own `Connection` header).
 fn forward_headers(src: &HeaderMap) -> HeaderMap {
+    let connection = connection_header_names(src);
     let mut out = HeaderMap::with_capacity(src.len());
     for (name, value) in src.iter() {
-        if is_hop_by_hop(name) {
+        if should_strip_header(name, &connection) {
             continue;
         }
         out.append(name.clone(), value.clone());
@@ -186,12 +203,13 @@ fn relay_response(resp: reqwest::Response) -> Response {
     let status =
         StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
+    let connection = connection_header_names(resp.headers());
     let mut headers = HeaderMap::with_capacity(resp.headers().len());
     for (name, value) in resp.headers().iter() {
-        // Drop hop-by-hop and length/framing headers: we re-stream the body and
-        // let the HTTP server set framing. content-length on a streamed body
-        // would risk a mismatch.
-        if is_hop_by_hop(name) || name == "content-length" {
+        // Drop hop-by-hop (static + Connection-named) and length/framing headers:
+        // we re-stream the body and let the HTTP server set framing.
+        // content-length on a streamed body would risk a mismatch.
+        if should_strip_header(name, &connection) || name == "content-length" {
             continue;
         }
         if let (Ok(n), Ok(v)) = (
@@ -221,9 +239,10 @@ async fn relay_buffered_with_inspection(
     let status =
         StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
+    let connection = connection_header_names(resp.headers());
     let mut headers = HeaderMap::with_capacity(resp.headers().len());
     for (name, value) in resp.headers().iter() {
-        if is_hop_by_hop(name) || name == "content-length" {
+        if should_strip_header(name, &connection) || name == "content-length" {
             continue;
         }
         if let (Ok(n), Ok(v)) = (
@@ -282,4 +301,78 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
     HOP_BY_HOP
         .iter()
         .any(|h| name.as_str().eq_ignore_ascii_case(h))
+}
+
+/// The header names listed in a message's `Connection` header. Per RFC 9110
+/// §7.6.1 these are hop-by-hop for *this* message and must not be forwarded
+/// (e.g. `Connection: x-internal` makes `x-internal` hop-specific).
+fn connection_header_names(headers: &HeaderMap) -> Vec<HeaderName> {
+    headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect()
+}
+
+/// Whether a header should be dropped on a proxy hop: either in the static
+/// hop-by-hop set or named by this message's `Connection` header.
+fn should_strip_header(name: &HeaderName, connection: &[HeaderName]) -> bool {
+    is_hop_by_hop(name) || connection.iter().any(|h| h == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header_map(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        for (k, v) in pairs {
+            m.append(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        m
+    }
+
+    #[test]
+    fn forward_headers_strips_static_hop_by_hop() {
+        let src = header_map(&[
+            ("host", "example.com"),
+            ("connection", "keep-alive"),
+            ("authorization", "Bearer t"),
+            ("content-type", "application/json"),
+        ]);
+        let out = forward_headers(&src);
+        assert!(out.get("host").is_none());
+        assert!(out.get("connection").is_none());
+        // Non-hop headers survive.
+        assert_eq!(out.get("authorization").unwrap(), "Bearer t");
+        assert_eq!(out.get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn forward_headers_strips_connection_named_headers() {
+        // `Connection: x-internal, x-trace` marks those headers hop-by-hop.
+        let src = header_map(&[
+            ("connection", "x-internal, x-trace"),
+            ("x-internal", "secret"),
+            ("x-trace", "abc"),
+            ("x-keep", "kept"),
+        ]);
+        let out = forward_headers(&src);
+        assert!(out.get("x-internal").is_none());
+        assert!(out.get("x-trace").is_none());
+        assert_eq!(out.get("x-keep").unwrap(), "kept");
+    }
+
+    #[test]
+    fn connection_token_matching_is_case_insensitive() {
+        let headers = header_map(&[("connection", "X-Internal")]);
+        let names = connection_header_names(&headers);
+        let lower = HeaderName::from_static("x-internal");
+        assert!(should_strip_header(&lower, &names));
+    }
 }

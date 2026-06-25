@@ -41,7 +41,9 @@ passthrough):
 ## Run
 
 ```bash
-cargo run -p guardrail -- --listen 127.0.0.1:8080 --backend http://127.0.0.1:1234
+# from the repo root (or drop --manifest-path when run inside rust/)
+cargo run --manifest-path rust/Cargo.toml -p guardrail -- \
+  --listen 127.0.0.1:8080 --backend http://127.0.0.1:1234
 ```
 
 Config is also available via env: `GUARDRAIL_LISTEN`, `GUARDRAIL_BACKEND`,
