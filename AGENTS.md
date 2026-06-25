@@ -17,8 +17,10 @@ src/jarvis/        # the package (7 modules)
   tui.py           # Textual TUIs (mcp manager, auth manager)
 tests/unit/        # pure unit tests
 tests/integration/ # API endpoint + TUI tests
-scripts/           # PyInstaller build scripts
+scripts/           # PyInstaller + cargo build scripts
 macOs/             # Xcode project for the menu bar app
+rust/              # cargo workspace — guardrail proxy (sidecar, see below)
+  guardrail/       # transparent OpenAI chat-completions proxy + tool-call guardrails
 ```
 
 ## Commands
@@ -42,6 +44,11 @@ bash scripts/build_jarvis_binary.sh
 
 # Build standalone binary (Linux x86_64)
 bash scripts/build_jarvis_binary_linux.sh
+
+# Guardrail proxy (Rust sidecar) — test + build
+cargo test --manifest-path rust/Cargo.toml
+bash scripts/build_guardrail_binary.sh        # macOS → app Resources/
+bash scripts/build_guardrail_binary_linux.sh  # Linux → dist/
 ```
 
 ## Testing quirks
@@ -62,17 +69,34 @@ bash scripts/build_jarvis_binary_linux.sh
 
 ## macOS app
 
-The menu bar app (`macOs/Jarvis/`) is a Swift/Xcode project that embeds the PyInstaller binary. **Build order matters** — the binary must exist before Xcode can bundle it:
+The menu bar app (`macOs/Jarvis/`) is a Swift/Xcode project that embeds two
+binaries: the PyInstaller `jarvis` binary and the Rust `guardrail` binary.
+**Build order matters** — both binaries must exist in `Resources/` before Xcode
+can bundle them:
 
 ```bash
-# 1. Build the Python binary into the Xcode Resources dir
-bash scripts/build_jarvis_binary.sh   # → macOs/Jarvis/Jarvis/Resources/jarvis
+# 1. Build both binaries into the Xcode Resources dir
+bash scripts/build_jarvis_binary.sh      # → macOs/Jarvis/Jarvis/Resources/jarvis
+bash scripts/build_guardrail_binary.sh   # → macOs/Jarvis/Jarvis/Resources/guardrail
 
 # 2. Build the app
 xcodebuild -project macOs/Jarvis/Jarvis.xcodeproj -scheme Jarvis -configuration Debug build
 ```
+
+## Guardrail proxy (Rust sidecar)
+
+`rust/guardrail/` is a transparent OpenAI chat-completions proxy in front of an
+OpenAI-compatible backend (LM Studio), applying small-model tool-call guardrails
+in the wire path. It is a **separate process at a different layer** from the MCP
+proxy — jarvis sits on the tool-discovery (MCP) edge, guardrail on the inference
+(OpenAI HTTP) edge — and they do not call each other at runtime. They co-ship as
+one product: the menu bar app launches and supervises both. Currently at
+**Milestone 1 (transparent passthrough)**; guardrail logic lands in later
+milestones, each toggle-off-able. See `rust/guardrail/README.md`.
+
 ## CI
 
-- Every push/PR: pytest + binary builds (macOS arm64, Linux x86_64).
+- Every push/PR: pytest + `cargo test` + binary builds (jarvis macOS arm64 &
+  Linux x86_64; guardrail Linux x86_64; both embedded in the macOS app build).
 - No lint or typecheck step in CI. Ruff cache exists locally but there is no enforced config.
 - Releases trigger on `v*` tags and produce binaries + a macOS `.dmg`.

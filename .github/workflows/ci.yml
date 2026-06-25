@@ -20,15 +20,30 @@ jobs:
       - name: Run pytest
         run: uv run --group dev pytest tests
 
+  test-guardrail:
+    name: Test guardrail proxy (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo test
+        working-directory: rust
+        run: cargo test --locked
+
   build-macos:
-    name: Build jarvis binary + macOS app (arm64)
+    name: Build jarvis + guardrail binaries + macOS app (arm64)
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Build jarvis binary
         run: bash scripts/build_jarvis_binary.sh
+      - name: Build guardrail binary
+        run: bash scripts/build_guardrail_binary.sh
       - name: Build Xcode project
         run: |
           xcodebuild \
@@ -50,3 +65,13 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Build jarvis binary
         run: bash scripts/build_jarvis_binary_linux.sh
+
+  build-guardrail-linux:
+    name: Build guardrail binary (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build guardrail binary
+        run: bash scripts/build_guardrail_binary_linux.sh
