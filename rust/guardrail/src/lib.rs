@@ -13,6 +13,8 @@
 //! path is pure passthrough. [`build_app`] is the single entrypoint both the
 //! binary and the integration tests use.
 
+pub mod model;
+
 use std::net::SocketAddr;
 
 use axum::{
