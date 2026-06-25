@@ -20,20 +20,21 @@ Jarvis shrinks the tool surface the model sees to 3 synthetic tools; guardrail
 makes the calls to those tools reliable on small models. Complementary, not
 coupled.
 
-## Status: Milestone 1 — transparent passthrough
+## Status
 
-Right now the proxy **only** forwards requests and responses verbatim, including
-streaming. Behaviour through the proxy is byte-for-byte identical to talking to
-the backend directly. This is the failure-isolation milestone: ship and verify
-it before any guardrail logic exists, so "it didn't work" is never the
-transport's fault. The `model` field is forwarded verbatim and never rewritten.
+Requests without tools (and any streamed request) are forwarded **verbatim**,
+byte-for-byte, including the response stream — the `model` field is never
+rewritten. Tool-enabled, non-streamed responses additionally run through
+**log-only** decode → rescue → validate so we can confirm detection without
+changing behaviour yet. Re-emit/retry land in M6.
 
-Later milestones (each toggle-off-able so the proxy can degrade to a zero-overhead
+Milestones (each toggle-off-able so the proxy can degrade to a zero-overhead
 passthrough):
 
-2. Typed+passthrough serde model — round-trip fidelity.
-3. Validation + canonical re-emit (log-only).
-4. Rescue parsing for the target model's format(s).
+1. ✅ Transparent passthrough (failure-isolation).
+2. ✅ Typed+passthrough serde model — round-trip fidelity.
+3. ✅ Validation + canonical re-emit (log-only).
+4. ✅ Rescue parsing — Mistral, Qwen, Hermes, Llama, fenced JSON, bare JSON.
 5. Synthetic `respond` tool + strip-to-text.
 6. Retry loop + ErrorTracker with fallback-to-last-text.
 7. Observability + per-guardrail config toggles.

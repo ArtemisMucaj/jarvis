@@ -19,6 +19,7 @@
 
 pub mod decode;
 pub mod model;
+pub mod rescue;
 pub mod validate;
 
 use std::net::SocketAddr;
@@ -287,13 +288,27 @@ fn inspect_response(body: &Value, request: &ChatRequest) {
                 }
             }
         }
-        ModelOutput::Text(text) => {
-            // In M4 this Text becomes the input to rescue parsing.
-            debug!(
+        ModelOutput::Text(text) => match rescue::rescue(&text) {
+            Some((parser, calls)) => {
+                let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+                info!(
+                    parser,
+                    count = calls.len(),
+                    tool_calls = ?names,
+                    "rescued tool calls from text (log-only; re-emit lands in a later milestone)"
+                );
+                match validate(&calls, &request.tool_names()) {
+                    Validation::Valid => info!("rescued tool calls valid"),
+                    Validation::NeedsRetry(nudge) => {
+                        warn!(%nudge, "rescued tool calls invalid")
+                    }
+                }
+            }
+            None => debug!(
                 len = text.len(),
-                "model returned text, no native tool_calls"
-            )
-        }
+                "model returned text, no tool calls (native or rescuable)"
+            ),
+        },
     }
 }
 
