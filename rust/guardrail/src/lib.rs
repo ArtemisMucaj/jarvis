@@ -32,7 +32,7 @@ use axum::{
     routing::any,
     Router,
 };
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use serde_json::Value;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
@@ -90,6 +90,67 @@ pub struct Config {
     /// off; only a stalled backend trips it.
     #[arg(long, env = "GUARDRAIL_READ_TIMEOUT_SECS", default_value_t = 300)]
     pub read_timeout_secs: u64,
+
+    /// Rescue malformed tool calls from model text. On by default; pass
+    /// `--rescue false` (or `GUARDRAIL_RESCUE=false`) to disable.
+    #[arg(long, env = "GUARDRAIL_RESCUE", default_value_t = true, action = ArgAction::Set)]
+    pub rescue: bool,
+
+    /// Inject the synthetic `respond` tool and unwrap it to text. On by default;
+    /// `--respond false` disables.
+    #[arg(long, env = "GUARDRAIL_RESPOND", default_value_t = true, action = ArgAction::Set)]
+    pub respond: bool,
+
+    /// Retry the backend with a corrective nudge when a tool call fails
+    /// validation. On by default; `--retry false` disables.
+    #[arg(long, env = "GUARDRAIL_RETRY", default_value_t = true, action = ArgAction::Set)]
+    pub retry: bool,
+
+    /// Maximum corrective retries before falling back to the model's last text.
+    #[arg(long, env = "GUARDRAIL_MAX_RETRIES", default_value_t = 2)]
+    pub max_retries: u32,
+}
+
+impl Config {
+    /// Collect the per-guardrail toggles into the runtime [`Guardrails`] set.
+    pub fn guardrails(&self) -> Guardrails {
+        Guardrails {
+            rescue: self.rescue,
+            respond: self.respond,
+            retry: self.retry,
+            max_retries: self.max_retries,
+        }
+    }
+}
+
+/// Runtime on/off state for each guardrail, plus the retry budget. Every
+/// guardrail is independently toggleable so the proxy can degrade to a
+/// zero-overhead passthrough; all default on.
+#[derive(Clone, Copy, Debug)]
+pub struct Guardrails {
+    pub rescue: bool,
+    pub respond: bool,
+    pub retry: bool,
+    pub max_retries: u32,
+}
+
+impl Default for Guardrails {
+    fn default() -> Self {
+        Self {
+            rescue: true,
+            respond: true,
+            retry: true,
+            max_retries: 2,
+        }
+    }
+}
+
+impl Guardrails {
+    /// Whether any guardrail is enabled. When false the tool-enabled path is a
+    /// plain passthrough.
+    pub fn any_active(&self) -> bool {
+        self.rescue || self.respond || self.retry
+    }
 }
 
 #[derive(Clone)]
@@ -97,6 +158,9 @@ pub struct AppState {
     pub client: reqwest::Client,
     /// Backend base URL with any trailing slash removed.
     pub backend: String,
+    /// Which guardrails are active. Defaults to all-on via [`AppState::new`];
+    /// override with [`AppState::with_guardrails`].
+    pub guardrails: Guardrails,
 }
 
 impl AppState {
@@ -104,7 +168,14 @@ impl AppState {
         Self {
             client,
             backend: backend.into().trim_end_matches('/').to_string(),
+            guardrails: Guardrails::default(),
         }
+    }
+
+    /// Override the guardrail toggle set (builder style).
+    pub fn with_guardrails(mut self, guardrails: Guardrails) -> Self {
+        self.guardrails = guardrails;
+        self
     }
 }
 
@@ -166,7 +237,9 @@ async fn proxy(State(state): State<AppState>, req: Request) -> Response {
 
         match backend_req.send().await {
             Ok(resp) => match inspect {
-                Some(request) => relay_buffered_with_inspection(resp, &request).await,
+                Some(request) => {
+                    relay_buffered_with_inspection(resp, &request, state.guardrails).await
+                }
                 None => relay_response(resp),
             },
             Err(e) => {
@@ -236,6 +309,7 @@ fn relay_response(resp: reqwest::Response) -> Response {
 async fn relay_buffered_with_inspection(
     resp: reqwest::Response,
     request: &ChatRequest,
+    guardrails: Guardrails,
 ) -> Response {
     let status =
         StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -263,7 +337,7 @@ async fn relay_buffered_with_inspection(
     };
 
     match serde_json::from_slice::<Value>(&bytes) {
-        Ok(body) => inspect_response(&body, request),
+        Ok(body) => inspect_response(&body, request, guardrails),
         Err(e) => warn!(error = %e, "tool-enabled response was not JSON; forwarding unverified"),
     }
 
@@ -276,7 +350,7 @@ async fn relay_buffered_with_inspection(
 /// Decode and validate the backend response, logging the outcome. This is the
 /// log-only seam where rescue (M4) and the retry loop (M6) will hook in; for now
 /// it only observes and never alters the response.
-fn inspect_response(body: &Value, request: &ChatRequest) {
+fn inspect_response(body: &Value, request: &ChatRequest, guardrails: Guardrails) {
     match decode_response(body) {
         ModelOutput::ToolCalls(calls) => {
             let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
@@ -288,7 +362,8 @@ fn inspect_response(body: &Value, request: &ChatRequest) {
                 }
             }
         }
-        ModelOutput::Text(text) => match rescue::rescue(&text) {
+        // Rescue is gated by its toggle; when off, malformed text is left as-is.
+        ModelOutput::Text(text) if guardrails.rescue => match rescue::rescue(&text) {
             Some((parser, calls)) => {
                 let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
                 info!(
@@ -309,6 +384,7 @@ fn inspect_response(body: &Value, request: &ChatRequest) {
                 "model returned text, no tool calls (native or rescuable)"
             ),
         },
+        ModelOutput::Text(_) => debug!("model returned text; rescue disabled"),
     }
 }
 

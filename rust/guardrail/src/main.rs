@@ -30,10 +30,16 @@ async fn main() -> anyhow::Result<()> {
         .read_timeout(Duration::from_secs(cfg.read_timeout_secs))
         .build()?;
 
-    let state = AppState::new(client, &cfg.backend);
+    let guardrails = cfg.guardrails();
+    let state = AppState::new(client, &cfg.backend).with_guardrails(guardrails);
     let app = build_app(state);
 
-    info!(listen = %cfg.listen, backend = %cfg.backend, "guardrail passthrough proxy starting");
+    info!(
+        listen = %cfg.listen,
+        backend = %cfg.backend,
+        ?guardrails,
+        "guardrail proxy starting"
+    );
 
     let listener = tokio::net::TcpListener::bind(cfg.listen).await?;
     axum::serve(listener, app)
