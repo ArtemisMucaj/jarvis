@@ -6,9 +6,10 @@ set -euo pipefail
 # it into the macOS app's Resources dir so Xcode can bundle it alongside the
 # `jarvis` binary.
 #
-# Defaults to the latest release, macOS arm64 asset. Override the version or the
-# specific macOS asset with:
-#   GUARDRAILS_VERSION=v0.6.0  bash scripts/download_guardrails_binary.sh
+# Defaults to a pinned release, macOS arm64 asset. The version is pinned (rather
+# than tracking `latest`) so the bundled binary is reproducible. Override the
+# version or the specific macOS asset with:
+#   GUARDRAILS_VERSION=latest  bash scripts/download_guardrails_binary.sh
 #   GUARDRAILS_ASSET=guardrail-macos-x86_64  bash scripts/download_guardrails_binary.sh
 #
 # Only macOS assets are accepted: the binary is bundled into the macOS .app and
@@ -19,7 +20,7 @@ set -euo pipefail
 # `xcodebuild` (see AGENTS.md → "macOS app").
 
 REPO="ArtemisMucaj/guardrails"
-GUARDRAILS_VERSION="${GUARDRAILS_VERSION:-latest}"
+GUARDRAILS_VERSION="${GUARDRAILS_VERSION:-v0.7.0}"
 GUARDRAILS_ASSET="${GUARDRAILS_ASSET:-guardrail-macos-aarch64}"
 
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl is not installed."; exit 1; }
