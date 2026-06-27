@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var state: AppState
     @State private var selectedServer: String?
     @State private var showSettings = false
+    @State private var showGuardrails = false
     @State private var showError = false
     @State private var errorMessage = ""
     var sortedNames: [String] { state.servers.keys.sorted() }
@@ -74,6 +75,13 @@ struct ContentView: View {
                 }
 
                 Button {
+                    showGuardrails = true
+                } label: {
+                    Label("Guardrails", systemImage: guardrailsIcon)
+                }
+                .help("Guardrails proxy status & stats")
+
+                Button {
                     showSettings = true
                 } label: {
                     Label("Settings", systemImage: "gearshape")
@@ -83,6 +91,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
+                .environmentObject(state)
+        }
+        .sheet(isPresented: $showGuardrails) {
+            GuardrailsView()
                 .environmentObject(state)
         }
         .alert("Error Starting Server", isPresented: $showError) {
@@ -128,6 +140,11 @@ struct ContentView: View {
         }
     }
     
+    /// Filled shield when the guardrails proxy is running, outline when stopped.
+    private var guardrailsIcon: String {
+        state.guardrailsManager.isRunning ? "shield.lefthalf.filled" : "shield"
+    }
+
     private func openConfigFile() {
         let configURL = state.configURL
         

@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         state?.stopServer()
+        state?.stopGuardrails()
     }
 }
 
@@ -30,6 +31,7 @@ struct JarvisMCPApp: App {
                 .onAppear {
                     appDelegate.state = state
                     state.startServer()
+                    state.startGuardrailsIfEnabled()
                 }
         }
         .defaultSize(width: 780, height: 520)
