@@ -105,7 +105,15 @@ struct GuardrailsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if !manager.isRunning && !manager.isStarting {
+        if let error = manager.lastError, !manager.isRunning, !manager.isStarting {
+            // A failed launch clears isStarting but leaves lastError set —
+            // surface it before the generic stopped state.
+            emptyState(
+                icon: "exclamationmark.triangle",
+                title: "Could not start guardrails",
+                message: error
+            )
+        } else if !manager.isRunning && !manager.isStarting {
             emptyState(
                 icon: "shield.slash",
                 title: "Guardrails is stopped",
@@ -121,12 +129,6 @@ struct GuardrailsView: View {
                 }
                 .padding()
             }
-        } else if manager.lastError != nil {
-            emptyState(
-                icon: "exclamationmark.triangle",
-                title: "Could not start guardrails",
-                message: manager.lastError ?? ""
-            )
         } else {
             emptyState(
                 icon: "chart.bar.xaxis",

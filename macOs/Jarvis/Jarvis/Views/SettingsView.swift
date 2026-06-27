@@ -70,6 +70,16 @@ struct SettingsView: View {
     @State private var draftGuardrailsAdminPort: Int = 0
     @State private var draftGuardrailsBackend: String = ""
 
+    /// Non-nil when the current draft can't be saved; shown inline and blocks
+    /// dismissal (e.g. listen port == admin port).
+    @State private var validationError: String?
+
+    /// guardrail binds both --listen and --admin-listen on 127.0.0.1, so the
+    /// two ports must differ. Only enforced when the proxy is enabled.
+    private var portsConflict: Bool {
+        draftGuardrailsEnabled && draftGuardrailsPort == draftGuardrailsAdminPort
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
@@ -108,34 +118,27 @@ struct SettingsView: View {
                         Text("Point your client at http://127.0.0.1:\(draftGuardrailsPort)/v1. Metrics are served on the admin port.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if portsConflict {
+                            Label("Listen and Admin ports must be different.", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
             }
             .formStyle(.grouped)
 
             HStack {
-                Spacer()
-                Button("Done") {
-                    if draftPort != state.port { state.port = draftPort }
-                    if draftCodeMode != state.codeMode { state.codeMode = draftCodeMode }
-
-                    // Apply guardrails config before toggling enabled so a
-                    // start picks up the latest port/backend.
-                    let trimmedBackend = draftGuardrailsBackend.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if draftGuardrailsPort != state.guardrailsPort { state.guardrailsPort = draftGuardrailsPort }
-                    if draftGuardrailsAdminPort != state.guardrailsAdminPort { state.guardrailsAdminPort = draftGuardrailsAdminPort }
-                    if !trimmedBackend.isEmpty, trimmedBackend != state.guardrailsBackend {
-                        state.guardrailsBackend = trimmedBackend
-                    }
-                    if draftGuardrailsEnabled != state.guardrailsEnabled {
-                        state.guardrailsEnabled = draftGuardrailsEnabled
-                    }
-
-                    state.saveConfig()
-                    dismiss()
+                if let validationError {
+                    Label(validationError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
+                Spacer()
+                Button("Done") { commit() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return)
+                .disabled(portsConflict)
             }
             .padding()
         }
@@ -149,5 +152,32 @@ struct SettingsView: View {
             draftGuardrailsAdminPort = state.guardrailsAdminPort
             draftGuardrailsBackend   = state.guardrailsBackend
         }
+    }
+
+    /// Validate, apply drafts to `state`, and dismiss. On a port conflict the
+    /// sheet stays open with an inline error instead of persisting a config
+    /// that can never launch.
+    private func commit() {
+        guard !portsConflict else {
+            validationError = "Listen and Admin ports must be different."
+            return
+        }
+        validationError = nil
+
+        if draftPort != state.port { state.port = draftPort }
+        if draftCodeMode != state.codeMode { state.codeMode = draftCodeMode }
+
+        // Apply guardrails config before toggling enabled so a start picks up
+        // the latest port/backend. The backend is persisted unconditionally so
+        // clearing the field resets a stale URL (an empty value is rejected at
+        // launch by GuardrailsManager).
+        let trimmedBackend = draftGuardrailsBackend.trimmingCharacters(in: .whitespacesAndNewlines)
+        if draftGuardrailsPort != state.guardrailsPort { state.guardrailsPort = draftGuardrailsPort }
+        if draftGuardrailsAdminPort != state.guardrailsAdminPort { state.guardrailsAdminPort = draftGuardrailsAdminPort }
+        if trimmedBackend != state.guardrailsBackend { state.guardrailsBackend = trimmedBackend }
+        if draftGuardrailsEnabled != state.guardrailsEnabled { state.guardrailsEnabled = draftGuardrailsEnabled }
+
+        state.saveConfig()
+        dismiss()
     }
 }

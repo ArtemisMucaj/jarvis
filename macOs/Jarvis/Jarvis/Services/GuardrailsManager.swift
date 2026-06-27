@@ -54,6 +54,12 @@ class GuardrailsManager: ObservableObject {
             return
         }
 
+        guard !backend.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            isStarting = false
+            setError("Guardrails backend URL is empty. Set it in Settings (e.g. http://127.0.0.1:1234).")
+            return
+        }
+
         guard let resourcePath = Bundle.main.resourcePath else {
             isStarting = false
             setError("Could not locate app bundle resources.")

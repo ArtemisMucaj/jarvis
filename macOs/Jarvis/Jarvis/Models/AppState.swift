@@ -147,7 +147,10 @@ class AppState: ObservableObject {
         let savedGRPort      = UserDefaults.standard.integer(forKey: "guardrailsPort")
         let savedGRAdminPort = UserDefaults.standard.integer(forKey: "guardrailsAdminPort")
         let grPort      = (1024...65535).contains(savedGRPort) ? savedGRPort : 8080
-        let grAdminPort = (1024...65535).contains(savedGRAdminPort) ? savedGRAdminPort : 8081
+        var grAdminPort = (1024...65535).contains(savedGRAdminPort) ? savedGRAdminPort : 8081
+        // Listen and admin ports must differ; bump the admin port if a stale or
+        // corrupt persisted value collides with the listen port.
+        if grAdminPort == grPort { grAdminPort = grPort == 65535 ? grPort - 1 : grPort + 1 }
         let grBackend   = UserDefaults.standard.string(forKey: "guardrailsBackend") ?? "http://127.0.0.1:1234"
         self.guardrailsEnabled    = UserDefaults.standard.bool(forKey: "guardrailsEnabled")
         self.guardrailsPort       = grPort
