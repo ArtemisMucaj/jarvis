@@ -109,6 +109,7 @@ class AppState: ObservableObject {
     private var fileWatcherSource: DispatchSourceFileSystemObject?
     private var fileWatcherFD: Int32 = -1
     private var reloadWorkItem: DispatchWorkItem?
+    private var guardrailsRestartWork: DispatchWorkItem?
 
     /// API port is always MCP port + 1 (matches jarvis.py _start_api_thread).
     var apiPort: Int { port + 1 }
@@ -313,11 +314,22 @@ class AppState: ObservableObject {
     }
 
     func startGuardrails() { guardrailsManager.startBundled() }
-    func stopGuardrails()  { guardrailsManager.stop() }
 
+    func stopGuardrails() {
+        guardrailsRestartWork?.cancel()
+        guardrailsRestartWork = nil
+        guardrailsManager.stop()
+    }
+
+    /// Restart, coalescing rapid successive calls (e.g. several settings
+    /// changed in one Settings "Done") into a single stop + delayed start so
+    /// we never schedule overlapping launches.
     func restartGuardrails() {
         guardrailsManager.stop()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.startGuardrails() }
+        guardrailsRestartWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.startGuardrails() }
+        guardrailsRestartWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     private func restartGuardrailsIfRunning() {

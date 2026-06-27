@@ -41,9 +41,21 @@ class GuardrailsManager: ObservableObject {
             print("⚠️ Guardrails already running or starting - ignoring start request")
             return
         }
-        DispatchQueue.main.async { self.lastError = nil }
+        // Set the re-entrancy guard synchronously: callers run on the main
+        // thread, and a deferred (async) flag would let a second start slip
+        // past this guard within the same runloop tick, spawning a duplicate
+        // process. startBundled() must only ever be called on the main thread.
+        isStarting = true
+        lastError = nil
+
+        guard listenPort != adminPort else {
+            isStarting = false
+            setError("Guardrails listen port and admin port must differ (both are \(listenPort)).")
+            return
+        }
 
         guard let resourcePath = Bundle.main.resourcePath else {
+            isStarting = false
             setError("Could not locate app bundle resources.")
             return
         }
@@ -52,13 +64,13 @@ class GuardrailsManager: ObservableObject {
         let fileManager = FileManager.default
 
         guard fileManager.isExecutableFile(atPath: binaryPath) else {
-            setError("Bundled guardrail binary not found at: \(binaryPath)\n\nRebuild the app after running scripts/build_guardrails_binary.sh")
+            isStarting = false
+            setError("Bundled guardrail binary not found at: \(binaryPath)\n\nRebuild the app after running scripts/download_guardrails_binary.sh")
             return
         }
 
         print("🔄 Starting guardrails (bundled binary)")
         print("📦 Binary: \(binaryPath)")
-        DispatchQueue.main.async { self.isStarting = true }
 
         let logURL = logFileURL()
         prepareLogFile(at: logURL)
@@ -102,6 +114,10 @@ class GuardrailsManager: ObservableObject {
         isRunning = false
         isStarting = false
         isReachable = false
+        // Drop metrics from the previous run so a restart (e.g. new backend
+        // or port) never shows stale numbers.
+        stats = nil
+        info = nil
     }
 
     // MARK: - Admin polling
@@ -166,10 +182,20 @@ class GuardrailsManager: ObservableObject {
         isStarting = false
         isRunning = true
         if let pid = process?.processIdentifier { watchProcess(pid) }
+        // The exit watcher is installed above, but the process may already
+        // have died before we got here (e.g. a port was in use). Reconcile so
+        // status doesn't stay stuck on "running" with the exit event missed.
+        if let proc = process, !proc.isRunning {
+            print("⚠️ Guardrails exited immediately after launch")
+            markStopped()
+            lastError = "Guardrails exited on startup. Check that ports \(listenPort)/\(adminPort) are free and the backend URL is valid."
+            return
+        }
         // Give the admin socket a moment to bind, then begin polling.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.refresh()
-            self?.startPolling()
+            guard let self, self.isRunning else { return }
+            self.refresh()
+            self.startPolling()
         }
         print("✅ Guardrails is ready (proxy \(proxyEndpoint))")
     }
@@ -182,6 +208,8 @@ class GuardrailsManager: ObservableObject {
         isReachable = false
         processSource?.cancel()
         processSource = nil
+        stats = nil
+        info = nil
     }
 
     private func startPolling() {
