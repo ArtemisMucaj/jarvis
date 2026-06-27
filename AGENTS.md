@@ -68,9 +68,36 @@ The menu bar app (`macOs/Jarvis/`) is a Swift/Xcode project that embeds the PyIn
 # 1. Build the Python binary into the Xcode Resources dir
 bash scripts/build_jarvis_binary.sh   # → macOs/Jarvis/Jarvis/Resources/jarvis
 
+# 1b. Fetch the guardrails proxy binary (prebuilt GitHub Release asset)
+bash scripts/download_guardrails_binary.sh   # → macOs/Jarvis/Jarvis/Resources/guardrail
+
 # 2. Build the app
 xcodebuild -project macOs/Jarvis/Jarvis.xcodeproj -scheme Jarvis -configuration Debug build
 ```
+
+Both binaries live in `Resources/` and are git-ignored. The Xcode project uses
+a file-system-synchronized group, so anything dropped in `Resources/` (or any
+new Swift file under `Jarvis/`) is bundled/compiled automatically — no
+`project.pbxproj` edits needed.
+
+### Guardrails proxy
+
+The app can also supervise [`guardrail`](https://github.com/ArtemisMucaj/guardrails),
+a transparent proxy that repairs malformed tool calls from local
+OpenAI-compatible model servers. It's an optional, separately-toggled process
+alongside the MCP server:
+
+- `scripts/download_guardrails_binary.sh` pulls the prebuilt release asset
+  (`guardrail-macos-aarch64` by default; override with `GUARDRAILS_VERSION` /
+  `GUARDRAILS_ASSET`) and verifies its SHA-256 against the release manifest.
+- `GuardrailsManager` (Services/) launches `Resources/guardrail` with
+  `--listen`, `--admin-listen`, and `--backend`, watches the process, and polls
+  the admin server's `/healthz`, `/info`, and `/stats` endpoints every 5s.
+- Settings (enabled, listen port, admin port, backend URL) live in `AppState`
+  (persisted in `UserDefaults`) and mirror the existing port/codeMode pattern.
+- `GuardrailsView` (Views/) is the dedicated status + metrics screen, reachable
+  from the toolbar shield button; the menu bar also shows running/stopped state.
+
 ## CI
 
 - Every push/PR: pytest + binary builds (macOS arm64, Linux x86_64).

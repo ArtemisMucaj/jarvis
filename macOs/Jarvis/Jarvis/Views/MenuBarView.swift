@@ -44,6 +44,21 @@ struct MenuBarView: View {
 
         Divider()
 
+        // Guardrails proxy
+        if state.guardrailsManager.isStarting {
+            Text("Guardrails: starting…").foregroundStyle(.secondary)
+        } else if state.guardrailsManager.isRunning {
+            Text("Guardrails: ● running — port \(state.guardrailsManager.listenPort)")
+        } else {
+            Text("Guardrails: ○ stopped").foregroundStyle(.secondary)
+        }
+        Button(state.guardrailsManager.isRunning ? "Stop Guardrails" : "Start Guardrails") {
+            state.guardrailsEnabled = !state.guardrailsManager.isRunning
+        }
+        .disabled(state.guardrailsManager.isStarting)
+
+        Divider()
+
         Button("Show Window") {
             NSApp.activate(ignoringOtherApps: true)
             // Bring main window to front

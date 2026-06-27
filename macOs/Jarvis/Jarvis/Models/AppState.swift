@@ -38,6 +38,7 @@ private struct CreatePresetResponse: Codable {
 class AppState: ObservableObject {
     @Published var servers: [String: MCPServer] = [:]
     @Published var processManager: ProcessManager
+    @Published var guardrailsManager: GuardrailsManager
     @Published var discoveredTools: [String: [DiscoveredTool]] = [:]
     @Published var isDiscoveringTools = false
     @Published var presets: [Preset] = []
@@ -59,6 +60,48 @@ class AppState: ObservableObject {
             UserDefaults.standard.set(codeMode, forKey: "codeMode")
             processManager.codeMode = codeMode
             if processManager.isRunning || processManager.isStarting { restartServer() }
+        }
+    }
+
+    // MARK: - Guardrails settings (persisted in UserDefaults)
+
+    /// Whether the guardrails proxy should run. Toggling starts/stops it.
+    @Published var guardrailsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(guardrailsEnabled, forKey: "guardrailsEnabled")
+            if guardrailsEnabled {
+                startGuardrails()
+            } else {
+                stopGuardrails()
+            }
+        }
+    }
+    /// Address the proxy listens on for OpenAI-compatible traffic.
+    @Published var guardrailsPort: Int {
+        didSet {
+            let clamped = max(1024, min(65535, guardrailsPort))
+            if guardrailsPort != clamped { guardrailsPort = clamped; return }
+            UserDefaults.standard.set(guardrailsPort, forKey: "guardrailsPort")
+            guardrailsManager.listenPort = guardrailsPort
+            restartGuardrailsIfRunning()
+        }
+    }
+    /// Admin/metrics server port (`--admin-listen`).
+    @Published var guardrailsAdminPort: Int {
+        didSet {
+            let clamped = max(1024, min(65535, guardrailsAdminPort))
+            if guardrailsAdminPort != clamped { guardrailsAdminPort = clamped; return }
+            UserDefaults.standard.set(guardrailsAdminPort, forKey: "guardrailsAdminPort")
+            guardrailsManager.adminPort = guardrailsAdminPort
+            restartGuardrailsIfRunning()
+        }
+    }
+    /// Backend base URL the proxy forwards to (`--backend`).
+    @Published var guardrailsBackend: String {
+        didSet {
+            UserDefaults.standard.set(guardrailsBackend, forKey: "guardrailsBackend")
+            guardrailsManager.backend = guardrailsBackend
+            restartGuardrailsIfRunning()
         }
     }
 
@@ -99,6 +142,18 @@ class AppState: ObservableObject {
         self.codeMode       = savedCodeMode
         self.processManager = ProcessManager(port: port, codeMode: savedCodeMode)
 
+        // Guardrails settings (fall back to upstream defaults when unset).
+        let savedGRPort      = UserDefaults.standard.integer(forKey: "guardrailsPort")
+        let savedGRAdminPort = UserDefaults.standard.integer(forKey: "guardrailsAdminPort")
+        let grPort      = (1024...65535).contains(savedGRPort) ? savedGRPort : 8080
+        let grAdminPort = (1024...65535).contains(savedGRAdminPort) ? savedGRAdminPort : 8081
+        let grBackend   = UserDefaults.standard.string(forKey: "guardrailsBackend") ?? "http://127.0.0.1:1234"
+        self.guardrailsEnabled    = UserDefaults.standard.bool(forKey: "guardrailsEnabled")
+        self.guardrailsPort       = grPort
+        self.guardrailsAdminPort  = grAdminPort
+        self.guardrailsBackend    = grBackend
+        self.guardrailsManager    = GuardrailsManager(listenPort: grPort, adminPort: grAdminPort, backend: grBackend)
+
         // Bootstrap preset state from disk so the UI is populated before the server starts.
         let (initialPresets, initialActiveID) = AppState.loadPresetsFromDisk()
         self.presets        = initialPresets
@@ -109,6 +164,12 @@ class AppState: ObservableObject {
 
         // Forward ProcessManager changes to AppState so UI updates.
         processManager.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.objectWillChange.send() }
+        }
+        .store(in: &cancellables)
+
+        // Forward GuardrailsManager changes (status, stats) to AppState too.
+        guardrailsManager.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.objectWillChange.send() }
         }
         .store(in: &cancellables)
@@ -242,6 +303,25 @@ class AppState: ObservableObject {
     func restartServer() {
         processManager.stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.startServer() }
+    }
+
+    // MARK: - Guardrails process
+
+    /// Start guardrails if the user has enabled it. Called at app launch.
+    func startGuardrailsIfEnabled() {
+        if guardrailsEnabled { startGuardrails() }
+    }
+
+    func startGuardrails() { guardrailsManager.startBundled() }
+    func stopGuardrails()  { guardrailsManager.stop() }
+
+    func restartGuardrails() {
+        guardrailsManager.stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.startGuardrails() }
+    }
+
+    private func restartGuardrailsIfRunning() {
+        if guardrailsManager.isRunning || guardrailsManager.isStarting { restartGuardrails() }
     }
 
     // MARK: - Tool Discovery (API only)

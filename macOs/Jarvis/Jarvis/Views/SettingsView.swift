@@ -64,6 +64,12 @@ struct SettingsView: View {
     @State private var draftPort: Int = 0
     @State private var draftCodeMode: Bool = false
 
+    // Guardrails drafts.
+    @State private var draftGuardrailsEnabled: Bool = false
+    @State private var draftGuardrailsPort: Int = 0
+    @State private var draftGuardrailsAdminPort: Int = 0
+    @State private var draftGuardrailsBackend: String = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
@@ -79,6 +85,31 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                Section("Guardrails Proxy") {
+                    Toggle("Enabled", isOn: $draftGuardrailsEnabled)
+                    Text("Transparent proxy that repairs malformed tool calls from local OpenAI-compatible model servers (e.g. LM Studio).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if draftGuardrailsEnabled {
+                        LabeledContent("Listen Port") {
+                            PortField(value: $draftGuardrailsPort)
+                                .frame(width: 80, height: 22)
+                        }
+                        LabeledContent("Admin Port") {
+                            PortField(value: $draftGuardrailsAdminPort)
+                                .frame(width: 80, height: 22)
+                        }
+                        LabeledContent("Backend") {
+                            TextField("http://127.0.0.1:1234", text: $draftGuardrailsBackend)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 220)
+                        }
+                        Text("Point your client at http://127.0.0.1:\(draftGuardrailsPort)/v1. Metrics are served on the admin port.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .formStyle(.grouped)
 
@@ -87,6 +118,19 @@ struct SettingsView: View {
                 Button("Done") {
                     if draftPort != state.port { state.port = draftPort }
                     if draftCodeMode != state.codeMode { state.codeMode = draftCodeMode }
+
+                    // Apply guardrails config before toggling enabled so a
+                    // start picks up the latest port/backend.
+                    let trimmedBackend = draftGuardrailsBackend.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if draftGuardrailsPort != state.guardrailsPort { state.guardrailsPort = draftGuardrailsPort }
+                    if draftGuardrailsAdminPort != state.guardrailsAdminPort { state.guardrailsAdminPort = draftGuardrailsAdminPort }
+                    if !trimmedBackend.isEmpty, trimmedBackend != state.guardrailsBackend {
+                        state.guardrailsBackend = trimmedBackend
+                    }
+                    if draftGuardrailsEnabled != state.guardrailsEnabled {
+                        state.guardrailsEnabled = draftGuardrailsEnabled
+                    }
+
                     state.saveConfig()
                     dismiss()
                 }
@@ -100,6 +144,10 @@ struct SettingsView: View {
         .onAppear {
             draftPort = state.port
             draftCodeMode = state.codeMode
+            draftGuardrailsEnabled   = state.guardrailsEnabled
+            draftGuardrailsPort      = state.guardrailsPort
+            draftGuardrailsAdminPort = state.guardrailsAdminPort
+            draftGuardrailsBackend   = state.guardrailsBackend
         }
     }
 }
