@@ -88,7 +88,7 @@ OpenAI-compatible model servers. It's an optional, separately-toggled process
 alongside the MCP server:
 
 - `scripts/download_guardrails_binary.sh` pulls the prebuilt release asset
-  (pinned `v0.7.0`, `guardrail-macos-aarch64` by default; override with
+  (pinned to a specific release, `guardrail-macos-aarch64` by default; override with
   `GUARDRAILS_VERSION` / `GUARDRAILS_ASSET`) and verifies its SHA-256 against the
   release manifest.
 - `GuardrailsManager` (Services/) launches `Resources/guardrail` with

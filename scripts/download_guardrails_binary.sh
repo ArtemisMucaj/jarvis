@@ -20,7 +20,7 @@ set -euo pipefail
 # `xcodebuild` (see AGENTS.md → "macOS app").
 
 REPO="ArtemisMucaj/guardrails"
-GUARDRAILS_VERSION="${GUARDRAILS_VERSION:-v0.7.0}"
+GUARDRAILS_VERSION="${GUARDRAILS_VERSION:-v0.8.0}"
 GUARDRAILS_ASSET="${GUARDRAILS_ASSET:-guardrail-macos-aarch64}"
 
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl is not installed."; exit 1; }
