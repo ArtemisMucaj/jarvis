@@ -11,6 +11,12 @@ struct ServerDetailView: View {
     @State private var newHeaderValue = ""
     @State private var stagedServer: MCPServer
     @State private var hasChanges = false
+    // Keys that existed in the config file when the view was opened — shown
+    // read-only with an obfuscated value so the user can see what's set
+    // without being able to accidentally change it here. @State latches the
+    // value at first init so re-renders after applyChanges() don't promote
+    // newly added headers into the read-only set.
+    @State private var configFileHeaderKeys: Set<String>
 
     // Stable-identity wrapper for args to avoid index-based ForEach issues
     struct ArgItem: Identifiable {
@@ -25,6 +31,7 @@ struct ServerDetailView: View {
         self.onBack = onBack
         _stagedServer = State(initialValue: server)
         _argItems = State(initialValue: (server.args ?? []).map { ArgItem(id: UUID(), value: $0) })
+        _configFileHeaderKeys = State(initialValue: Set(server.headers?.keys.map { $0 } ?? []))
     }
 
     private func binding<T: Equatable>(for keyPath: WritableKeyPath<MCPServer, T>) -> Binding<T> {
@@ -148,12 +155,13 @@ struct ServerDetailView: View {
             // Description
             Section {
                 TextField(
-                    "What this server is for",
+                    "",
                     text: optionalStringBinding(for: \.description),
                     axis: .vertical
                 )
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...5)
+                .accessibilityLabel("Description")
             } header: {
                 Text("Description")
             } footer: {
@@ -167,47 +175,76 @@ struct ServerDetailView: View {
                 Section {
                     if let headers = stagedServer.headers, !headers.isEmpty {
                         ForEach(headers.keys.sorted(), id: \.self) { key in
-                            HStack {
-                                Text(key)
-                                    .frame(minWidth: 100, alignment: .leading)
-                                let valueBinding = Binding(
-                                    get: { stagedServer.headers?[key] ?? "" },
-                                    set: { newValue in
-                                        stagedServer.headers?[key] = newValue
+                            if configFileHeaderKeys.contains(key) {
+                                // From config file — show key as label, value obfuscated
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(key)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text("••••••••")
+                                        .foregroundStyle(.tertiary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 4)
+                                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                                }
+                            } else {
+                                HStack {
+                                    let valueBinding = Binding(
+                                        get: { stagedServer.headers?[key] ?? "" },
+                                        set: { newValue in
+                                            stagedServer.headers?[key] = newValue
+                                            hasChanges = true
+                                        }
+                                    )
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(key)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        if isSensitiveHeader(key) {
+                                            SecureField("Value", text: valueBinding)
+                                                .textFieldStyle(.roundedBorder)
+                                        } else {
+                                            TextField("Value", text: valueBinding)
+                                                .textFieldStyle(.roundedBorder)
+                                        }
+                                    }
+                                    Button {
+                                        stagedServer.headers?.removeValue(forKey: key)
+                                        if stagedServer.headers?.isEmpty == true {
+                                            stagedServer.headers = nil
+                                        }
                                         hasChanges = true
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                            .foregroundStyle(.red)
                                     }
-                                )
-                                if isSensitiveHeader(key) {
-                                    SecureField("Value", text: valueBinding)
-                                        .textFieldStyle(.roundedBorder)
-                                } else {
-                                    TextField("Value", text: valueBinding)
-                                        .textFieldStyle(.roundedBorder)
+                                    .buttonStyle(.borderless)
+                                    .padding(.top, 16)
                                 }
-                                Button {
-                                    stagedServer.headers?.removeValue(forKey: key)
-                                    if stagedServer.headers?.isEmpty == true {
-                                        stagedServer.headers = nil
-                                    }
-                                    hasChanges = true
-                                } label: {
-                                    Image(systemName: "minus.circle")
-                                        .foregroundStyle(.red)
-                                }
-                                .buttonStyle(.borderless)
                             }
                         }
                     }
-                    HStack {
-                        TextField("Key", text: $newHeaderKey)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 100)
-                        if isSensitiveHeader(newHeaderKey.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                            SecureField("Value", text: $newHeaderValue)
+                    HStack(alignment: .bottom) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Key")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            TextField("Header-Name", text: $newHeaderKey)
                                 .textFieldStyle(.roundedBorder)
-                        } else {
-                            TextField("Value", text: $newHeaderValue)
-                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 100)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Value")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if isSensitiveHeader(newHeaderKey.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                SecureField("", text: $newHeaderValue)
+                                    .textFieldStyle(.roundedBorder)
+                            } else {
+                                TextField("", text: $newHeaderValue)
+                                    .textFieldStyle(.roundedBorder)
+                            }
                         }
                         Button {
                             guard let key = normalizedHeaderName(newHeaderKey) else { return }
@@ -224,6 +261,7 @@ struct ServerDetailView: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(normalizedHeaderName(newHeaderKey) == nil)
+                        .padding(.bottom, 4)
                     }
                 } header: {
                     Text("Headers")
