@@ -51,6 +51,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Build embedded jarvis binary
         run: bash scripts/build_jarvis_binary.sh
+      - name: Download guardrails binary
+        run: bash scripts/download_guardrails_binary.sh
       - name: Install create-dmg
         run: brew install create-dmg
       - name: Build Xcode project
